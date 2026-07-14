@@ -2,6 +2,13 @@ appId: com.osvaldir.osvacode
 productName: OsvaCode
 copyright: Copyright © 2026 Osvaldir Dias da Silva Junior
 
+# Publicação de releases (usado pelo CI ao criar uma tag vX.Y.Z).
+# Cria um release DRAFT no GitHub com os instaladores anexados.
+publish:
+  provider: github
+  owner: OsvaldirJr
+  repo: osva-code
+
 directories:
   # onde o .dmg e o .app são gerados
   output: release
