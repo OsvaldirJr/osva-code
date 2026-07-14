@@ -3,11 +3,14 @@ productName: OsvaCode
 copyright: Copyright © 2026 Osvaldir Dias da Silva Junior
 
 # Publicação de releases (usado pelo CI ao criar uma tag vX.Y.Z).
-# Cria um release DRAFT no GitHub com os instaladores anexados.
+# releaseType: release => publica direto (não fica como rascunho), então os
+# instaladores aparecem na página da tag/release em vez de só o código-fonte.
+# Troque para "draft" se preferir revisar antes de publicar.
 publish:
   provider: github
   owner: OsvaldirJr
   repo: osva-code
+  releaseType: release
 
 directories:
   # onde o .dmg e o .app são gerados
