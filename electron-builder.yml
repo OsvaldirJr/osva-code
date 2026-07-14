@@ -1,0 +1,63 @@
+appId: com.osvaldir.osvacode
+productName: OsvaCode
+copyright: Copyright © 2026 Osvaldir Dias da Silva Junior
+
+directories:
+  # onde o .dmg e o .app são gerados
+  output: release
+  # ícone e recursos de build (build/icon.icns, se você adicionar um)
+  buildResources: build
+
+# Inclui tudo por padrão e remove o que não vai para o app (fonte, configs, builds do TS).
+# out/ (saída do electron-vite) e as dependências de produção são incluídos automaticamente.
+files:
+  - '!**/.vscode/*'
+  - '!src/**/*'
+  - '!release/**/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!electron-builder.yml'
+  - '!{README.md,.gitignore,.npmrc,.editorconfig,.DS_Store}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!*.tsbuildinfo'
+  - '!package-lock.json'
+
+mac:
+  # Apple Silicon (o Mac deste projeto). Para gerar também Intel, use [arm64, x64].
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.developer-tools
+  # build local sem assinatura (sem conta Apple Developer). O app roda na sua
+  # máquina; em outras, abra com clique-direito → Abrir na primeira vez.
+  identity: null
+
+dmg:
+  title: ${productName} ${version}
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# Windows: instalador NSIS (.exe). Buildar no Mac exige Wine; o ideal é buildar
+# no próprio Windows, via Docker (electronuserland/builder:wine) ou CI.
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # adicione build/icon.ico (256x256) para um ícone próprio
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-setup.${ext}
+
+# Linux: AppImage (arquivo único, roda sem instalar). O electron-builder baixa
+# as ferramentas necessárias — builda direto do Mac.
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Development
+  synopsis: Chat desktop para modelos de IA próprios, com MCP e respostas humanizadas
+  artifactName: ${productName}-${version}-${arch}.${ext}

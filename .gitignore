@@ -1,0 +1,17 @@
+# dependências
+node_modules/
+
+# saídas de build
+out/
+dist/
+release/
+
+# cache do TypeScript
+*.tsbuildinfo
+
+# logs
+*.log
+npm-debug.log*
+
+# macOS
+.DS_Store

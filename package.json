@@ -1,0 +1,33 @@
+{
+  "name": "osvacode",
+  "version": "0.1.0",
+  "description": "Chat desktop para modelos de IA próprios e de terceiros, com MCP e respostas humanizadas",
+  "main": "./out/main/index.js",
+  "author": "Osvaldir Dias da Silva Junior",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "start": "electron-vite preview",
+    "package": "electron-vite build && electron-builder --mac"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "lucide-react": "^1.24.0",
+    "openai": "^4.70.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-markdown": "^9.0.0",
+    "remark-gfm": "^4.0.0",
+    "typescript": "^5.6.0"
+  }
+}
