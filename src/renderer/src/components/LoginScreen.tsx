@@ -19,6 +19,8 @@ export function LoginScreen({
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [server, setServer] = useState(serverUrl)
+  const [editingServer, setEditingServer] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -33,10 +35,10 @@ export function LoginScreen({
     setNotice(null)
     try {
       if (mode === 'signin') {
-        onLoggedIn(await window.api.login(email.trim(), password))
+        onLoggedIn(await window.api.login(email.trim(), password, server.trim()))
         return
       }
-      const created = await window.api.signup(name.trim(), email.trim(), password)
+      const created = await window.api.signup(name.trim(), email.trim(), password, server.trim())
       if (created.user.role === 'pending') {
         setMode('signin')
         setPassword('')
@@ -68,8 +70,26 @@ export function LoginScreen({
         </div>
         <p className="login-subtitle">
           {mode === 'signin' ? 'Entre com a sua conta' : 'Crie a sua conta'}
-          {serverUrl && <span className="login-server">{serverUrl.replace(/^https?:\/\//, '')}</span>}
+          <span className="login-server">
+            {server.replace(/^https?:\/\//, '') || 'nenhum servidor definido'}
+            {' · '}
+            <button className="login-server-change" onClick={() => setEditingServer((v) => !v)}>
+              {editingServer ? 'ocultar' : 'trocar servidor'}
+            </button>
+          </span>
         </p>
+
+        {editingServer && (
+          <label>
+            Servidor (Open WebUI)
+            <input
+              value={server}
+              placeholder="https://chat.seuservidor.com"
+              onChange={(e) => setServer(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && setEditingServer(false)}
+            />
+          </label>
+        )}
 
         <div className="login-tabs">
           <button

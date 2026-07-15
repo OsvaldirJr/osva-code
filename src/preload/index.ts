@@ -18,9 +18,21 @@ const api: OsvaCodeApi = {
   syncPull: (id) => ipcRenderer.invoke('sync:pull', id),
   syncPush: (payload) => ipcRenderer.invoke('sync:push', payload),
   syncDelete: (owuiId) => ipcRenderer.invoke('sync:delete', owuiId),
+  projectRead: (folder) => ipcRenderer.invoke('project:read', folder),
+  projectSaveInstructions: (folder, content) =>
+    ipcRenderer.invoke('project:save-instructions', folder, content),
+  projectSaveNotes: (folder, content) => ipcRenderer.invoke('project:save-notes', folder, content),
+  projectCatalog: (folder) => ipcRenderer.invoke('project:catalog', folder),
+  projectInstallCatalogSkill: (folder, id) =>
+    ipcRenderer.invoke('project:install-catalog-skill', folder, id),
+  projectSaveSkill: (folder, name, content) =>
+    ipcRenderer.invoke('project:save-skill', folder, name, content),
+  projectDeleteSkill: (folder, name) => ipcRenderer.invoke('project:delete-skill', folder, name),
   getSession: () => ipcRenderer.invoke('auth:session'),
-  login: (email, password) => ipcRenderer.invoke('auth:login', email, password),
-  signup: (name, email, password) => ipcRenderer.invoke('auth:signup', name, email, password),
+  login: (email, password, serverUrl) =>
+    ipcRenderer.invoke('auth:login', email, password, serverUrl),
+  signup: (name, email, password, serverUrl) =>
+    ipcRenderer.invoke('auth:signup', name, email, password, serverUrl),
   logout: () => ipcRenderer.invoke('auth:logout'),
   onChatEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: ChatEventPayload): void =>

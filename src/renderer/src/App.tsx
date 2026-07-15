@@ -12,8 +12,9 @@ import { ErrorBubble } from './components/ErrorBubble'
 import { SettingsModal } from './components/SettingsModal'
 import { Sidebar } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
+import { ProjectPanel } from './components/ProjectPanel'
 import {
-  FolderOpen, Plus, Settings, AlertTriangle, Folder, Paperclip, Mic, Square, Send, X
+  FolderOpen, Plus, Settings, AlertTriangle, Folder, Paperclip, Mic, Square, Send, X, NotebookPen
 } from 'lucide-react'
 
 export type UiMessage =
@@ -100,6 +101,7 @@ export default function App(): JSX.Element {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [projectPanelOpen, setProjectPanelOpen] = useState(false)
   // pasta já escolhida para uma nova conversa que está aguardando o nome
   const [namingFolder, setNamingFolder] = useState<string | null>(null)
   const [mode, setMode] = useState<'edit' | 'propose'>('edit')
@@ -639,6 +641,17 @@ export default function App(): JSX.Element {
         {active && (
           <div className="chat-header">
             <span className="chat-title">{active.title}</span>
+            {active.folder && (
+              <button
+                className="folder-chip"
+                title="Instruções e skills do projeto (.osvacode)"
+                onClick={() => setProjectPanelOpen(true)}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <NotebookPen size={14} /> Projeto
+                </span>
+              </button>
+            )}
             <button
               className="folder-chip"
               title={active.folder ?? 'Definir a pasta em que esta conversa trabalha'}
@@ -834,6 +847,10 @@ export default function App(): JSX.Element {
             setMcpStatus(status)
           }}
         />
+      )}
+
+      {projectPanelOpen && active?.folder && (
+        <ProjectPanel folder={active.folder} onClose={() => setProjectPanelOpen(false)} />
       )}
     </div>
   )

@@ -6,6 +6,19 @@ import { McpManager } from './mcp'
 import { listModels, runChat, runSimplify, type PermissionRequest } from './chat'
 import { owuiDeleteChat, owuiListChats, owuiPullChat, owuiPushChat, type OwuiAuth } from './sync'
 import { clearSessionFile, loadSessionFile, owuiSignin, owuiSignup, saveSessionFile } from './auth'
+import {
+  autoInstallSkills,
+  catalogStatus,
+  deleteProjectSkill,
+  ensureProjectDir,
+  installCatalogSkill,
+  loadProjectContext,
+  projectPromptBlock,
+  readProjectFiles,
+  saveProjectInstructions,
+  saveProjectNotes,
+  saveProjectSkill
+} from './project'
 import type {
   AppSettings,
   AuthSession,
@@ -31,6 +44,21 @@ const mcp = new McpManager()
 const activeRequests = new Map<string, AbortController>()
 const pendingPermissions = new Map<string, (decision: PermissionDecision) => void>()
 let session: AuthSession | null = null
+
+/** Normaliza a URL do servidor de login (aceita sem protocolo, remove barra final). */
+function resolveServerUrl(raw?: string): string {
+  let url = (raw ?? '').trim() || settings.openWebUi.url || DEFAULT_OPENWEBUI_URL
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+  return url.replace(/\/+$/, '')
+}
+
+/** Após autenticar com sucesso, o servidor usado vira o padrão do app. */
+function rememberServerUrl(url: string): void {
+  if (settings.openWebUi.url !== url) {
+    settings = { ...settings, openWebUi: { ...settings.openWebUi, url } }
+    saveSettings(settings)
+  }
+}
 
 /** Credenciais de sync: token da sessão logada, ou a chave de API como reserva. */
 function syncAuth(): OwuiAuth | null {
@@ -147,7 +175,13 @@ function registerIpc(): void {
       buttonLabel: 'Usar esta pasta',
       properties: ['openDirectory', 'createDirectory']
     })
-    return result.canceled ? null : (result.filePaths[0] ?? null)
+    const folder = result.canceled ? null : (result.filePaths[0] ?? null)
+    if (folder) {
+      // cria a estrutura .osvacode/ e instala as skills da stack detectada
+      ensureProjectDir(folder)
+      autoInstallSkills(folder)
+    }
+    return folder
   })
 
   ipcMain.handle(
@@ -175,6 +209,14 @@ function registerIpc(): void {
           '3. Antes de ler ou modificar arquivos, use a ferramenta de listar diretórios para descobrir a estrutura correta e os nomes exatos das pastas e arquivos.\n' +
           'Quando o usuário mencionar arquivos ou "esta pasta", aplique essas regras.'
         : settings.systemPrompt
+
+      if (folder) {
+        // garante a estrutura .osvacode/ (pastas antigas ganham na 1ª mensagem),
+        // instala skills da stack detectada e injeta tudo no prompt
+        ensureProjectDir(folder)
+        autoInstallSkills(folder)
+        systemPrompt += projectPromptBlock(folder, loadProjectContext(folder))
+      }
 
       if (mode === 'propose') {
         systemPrompt += '\n\nATENÇÃO: Você está no modo "APENAS PROPOR". VOCÊ ESTÁ PROIBIDO DE MODIFICAR, ESCREVER OU CRIAR ARQUIVOS. Apenas sugira e mostre os códigos na resposta.'
@@ -250,6 +292,30 @@ function registerIpc(): void {
     }
   })
 
+  ipcMain.handle('project:read', (_event, folder: string) => readProjectFiles(folder))
+
+  ipcMain.handle('project:catalog', (_event, folder: string) => catalogStatus(folder))
+
+  ipcMain.handle('project:install-catalog-skill', (_event, folder: string, id: string) => {
+    installCatalogSkill(folder, id)
+  })
+
+  ipcMain.handle('project:save-instructions', (_event, folder: string, content: string) => {
+    saveProjectInstructions(folder, content)
+  })
+
+  ipcMain.handle('project:save-notes', (_event, folder: string, content: string) => {
+    saveProjectNotes(folder, content)
+  })
+
+  ipcMain.handle('project:save-skill', (_event, folder: string, name: string, content: string) => {
+    return saveProjectSkill(folder, name, content)
+  })
+
+  ipcMain.handle('project:delete-skill', (_event, folder: string, name: string) => {
+    deleteProjectSkill(folder, name)
+  })
+
   ipcMain.handle('sync:delete', async (_event, owuiId: string) => {
     const auth = syncAuth()
     if (!auth) return false
@@ -264,29 +330,37 @@ function registerIpc(): void {
 
   ipcMain.handle('auth:session', () => session)
 
-  ipcMain.handle('auth:login', async (_event, email: string, password: string) => {
-    const url = settings.openWebUi.url || DEFAULT_OPENWEBUI_URL
-    const result = await owuiSignin(url, email, password)
-    if (result.user.role === 'pending') {
-      throw new Error(
-        'Sua conta ainda está aguardando aprovação do administrador. Tente novamente mais tarde.'
-      )
-    }
-    session = result
-    saveSessionFile(session)
-    return session
-  })
-
-  ipcMain.handle('auth:signup', async (_event, name: string, email: string, password: string) => {
-    const url = settings.openWebUi.url || DEFAULT_OPENWEBUI_URL
-    const result = await owuiSignup(url, name, email, password)
-    // contas novas nascem pendentes: só entram no app depois de aprovadas
-    if (result.user.role !== 'pending') {
+  ipcMain.handle(
+    'auth:login',
+    async (_event, email: string, password: string, serverUrl?: string) => {
+      const url = resolveServerUrl(serverUrl)
+      const result = await owuiSignin(url, email, password)
+      if (result.user.role === 'pending') {
+        throw new Error(
+          'Sua conta ainda está aguardando aprovação do administrador. Tente novamente mais tarde.'
+        )
+      }
       session = result
       saveSessionFile(session)
+      rememberServerUrl(url)
+      return session
     }
-    return result
-  })
+  )
+
+  ipcMain.handle(
+    'auth:signup',
+    async (_event, name: string, email: string, password: string, serverUrl?: string) => {
+      const url = resolveServerUrl(serverUrl)
+      const result = await owuiSignup(url, name, email, password)
+      rememberServerUrl(url)
+      // contas novas nascem pendentes: só entram no app depois de aprovadas
+      if (result.user.role !== 'pending') {
+        session = result
+        saveSessionFile(session)
+      }
+      return result
+    }
+  )
 
   ipcMain.handle('auth:logout', () => {
     session = null
