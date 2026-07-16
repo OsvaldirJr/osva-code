@@ -55,6 +55,20 @@ export function LoginScreen({
     }
   }
 
+  const enterAnonymous = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      onLoggedIn(await window.api.loginAnonymous())
+    } catch (err) {
+      setError(cleanIpcError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const switchMode = (next: Mode): void => {
     setMode(next)
     setError(null)
@@ -145,6 +159,18 @@ export function LoginScreen({
         <button className="send login-submit" onClick={() => void submit()} disabled={busy || !canSubmit}>
           {busy ? 'Aguarde…' : mode === 'signin' ? 'Entrar' : 'Criar cadastro'}
         </button>
+
+        <div className="login-or">
+          <span>ou</span>
+        </div>
+
+        <button className="login-anon" onClick={() => void enterAnonymous()} disabled={busy}>
+          Entrar sem conta (modo anônimo)
+        </button>
+        <p className="login-hint">
+          Usa o app só com o seu modelo, sem servidor nem Open WebUI. As conversas ficam apenas
+          neste computador (sem sincronização).
+        </p>
 
         {mode === 'signup' && (
           <p className="login-hint">

@@ -33,6 +33,7 @@ const api: OsvaCodeApi = {
     ipcRenderer.invoke('auth:login', email, password, serverUrl),
   signup: (name, email, password, serverUrl) =>
     ipcRenderer.invoke('auth:signup', name, email, password, serverUrl),
+  loginAnonymous: () => ipcRenderer.invoke('auth:anonymous'),
   logout: () => ipcRenderer.invoke('auth:logout'),
   onChatEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: ChatEventPayload): void =>

@@ -40,14 +40,23 @@ export type UiMessage =
     }
   | { kind: 'error'; id: string; content: string; resumable?: boolean }
 
+export type ConversationKind = 'chat' | 'dev'
+
 export interface Conversation {
   id: string
   title: string
   messages: UiMessage[]
   updatedAt: number
   folder?: string
+  /** 'chat' = conversa simples (sem pasta); 'dev' = com pasta de trabalho e ferramentas de arquivo. */
+  kind?: ConversationKind
   /** id da conversa correspondente no Open WebUI, quando sincronizada */
   owuiId?: string
+}
+
+/** Categoria da conversa. Conversas antigas (sem kind) são 'dev' se têm pasta. */
+export function conversationKind(c: Conversation): ConversationKind {
+  return c.kind ?? (c.folder ? 'dev' : 'chat')
 }
 
 function folderLabel(path: string): string {
@@ -102,8 +111,12 @@ export default function App(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [projectPanelOpen, setProjectPanelOpen] = useState(false)
-  // pasta já escolhida para uma nova conversa que está aguardando o nome
-  const [namingFolder, setNamingFolder] = useState<string | null>(null)
+  // aba ativa do menu: 'chat' (conversa simples) ou 'dev' (com pasta de trabalho)
+  const [tab, setTab] = useState<ConversationKind>('chat')
+  // nova conversa aguardando o nome (folder null = conversa de chat, sem pasta)
+  const [naming, setNaming] = useState<{ kind: ConversationKind; folder: string | null } | null>(
+    null
+  )
   const [mode, setMode] = useState<'edit' | 'propose'>('edit')
   const [attachments, setAttachments] = useState<File[]>([])
   const [isRecording, setIsRecording] = useState(false)
@@ -133,6 +146,9 @@ export default function App(): JSX.Element {
   const [resumingConv, setResumingConv] = useState<string | null>(null)
 
   const active = conversations.find((c) => c.id === activeId) ?? null
+  const activeKind = active ? conversationKind(active) : null
+  // pronta para conversar: chat não precisa de pasta; dev precisa.
+  const activeReady = !!active && (activeKind === 'chat' || !!active.folder)
 
   useEffect(() => {
     void window.api.getSettings().then(setSettings)
@@ -413,7 +429,9 @@ export default function App(): JSX.Element {
 
   const send = useCallback(async () => {
     const baseText = input.trim()
-    if ((!baseText && attachments.length === 0) || busy || !active || !active.folder) return
+    if ((!baseText && attachments.length === 0) || busy || !active) return
+    // dev exige pasta; chat não
+    if (conversationKind(active) === 'dev' && !active.folder) return
 
     setBusy(true)
     autoResumeCount.current = 0 // nova mensagem: reinicia o ciclo de retomada automática
@@ -478,7 +496,8 @@ export default function App(): JSX.Element {
 
   /** Reenvia a conversa a partir da última mensagem do usuário, descartando erros. */
   const retry = useCallback(() => {
-    if (!active || !active.folder || busy) return
+    if (!active || busy) return
+    if (conversationKind(active) === 'dev' && !active.folder) return
     const kinds = active.messages.map((m) => m.kind)
     const lastUserIdx = kinds.lastIndexOf('user')
     if (lastUserIdx < 0) return
@@ -530,28 +549,46 @@ export default function App(): JSX.Element {
     [activeId, patchConversation]
   )
 
-  // 1º passo da nova conversa: escolher a pasta (obrigatório)
+  // Nova conversa: no DevMode pede a pasta primeiro; no Chat vai direto ao nome.
   const startNewConversation = useCallback(async () => {
-    const folder = await window.api.pickFolder()
-    if (!folder) return
-    setNamingFolder(folder)
-  }, [])
+    if (tab === 'dev') {
+      const folder = await window.api.pickFolder()
+      if (!folder) return
+      setNaming({ kind: 'dev', folder })
+    } else {
+      setNaming({ kind: 'chat', folder: null })
+    }
+  }, [tab])
 
-  // 2º passo: nomear e criar a conversa
+  // Passo final: nomear e criar a conversa (chat sem pasta, dev com pasta).
   const confirmNewConversation = useCallback(
     (name: string) => {
-      if (!namingFolder) return
+      if (!naming) return
       const id = crypto.randomUUID()
-      const title = name.trim() || folderLabel(namingFolder)
+      const title = name.trim() || (naming.folder ? folderLabel(naming.folder) : 'Nova conversa')
       setConversations((prev) => [
-        { id, title, messages: [], updatedAt: Date.now(), folder: namingFolder },
+        {
+          id,
+          title,
+          messages: [],
+          updatedAt: Date.now(),
+          kind: naming.kind,
+          ...(naming.folder ? { folder: naming.folder } : {})
+        },
         ...prev
       ])
       setActiveId(id)
-      setNamingFolder(null)
+      setNaming(null)
     },
-    [namingFolder]
+    [naming]
   )
+
+  // Trocar de aba: deseleciona a conversa (a lista passa a ser a da aba) e cancela nomeação.
+  const changeTab = useCallback((next: ConversationKind) => {
+    setTab(next)
+    setActiveId(null)
+    setNaming(null)
+  }, [])
 
   const changeActiveFolder = useCallback(async () => {
     if (!activeId) return
@@ -624,13 +661,16 @@ export default function App(): JSX.Element {
           conversations={conversations}
           activeId={activeId}
           generatingId={busy ? generatingConversation.current : null}
-          namingFolder={namingFolder}
+          tab={tab}
+          onTabChange={changeTab}
+          naming={naming !== null}
+          namingFolder={naming?.folder ?? null}
           remoteChats={remoteChats}
           onImportRemote={(remote) => void importRemoteChat(remote)}
           onSelect={setActiveId}
           onNew={() => void startNewConversation()}
           onConfirmNew={confirmNewConversation}
-          onCancelNew={() => setNamingFolder(null)}
+          onCancelNew={() => setNaming(null)}
           onDelete={deleteConversation}
           onChangeProvider={changeProvider}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -641,7 +681,7 @@ export default function App(): JSX.Element {
         {active && (
           <div className="chat-header">
             <span className="chat-title">{active.title}</span>
-            {active.folder && (
+            {activeKind === 'dev' && active.folder && (
               <button
                 className="folder-chip"
                 title="Instruções e skills do projeto (.osvacode)"
@@ -652,15 +692,17 @@ export default function App(): JSX.Element {
                 </span>
               </button>
             )}
-            <button
-              className="folder-chip"
-              title={active.folder ?? 'Definir a pasta em que esta conversa trabalha'}
-              onClick={() => void changeActiveFolder()}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <FolderOpen size={14} /> {active.folder ? folderLabel(active.folder) : 'Definir pasta'}
-              </span>
-            </button>
+            {activeKind === 'dev' && (
+              <button
+                className="folder-chip"
+                title={active.folder ?? 'Definir a pasta em que esta conversa trabalha'}
+                onClick={() => void changeActiveFolder()}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <FolderOpen size={14} /> {active.folder ? folderLabel(active.folder) : 'Definir pasta'}
+                </span>
+              </button>
+            )}
           </div>
         )}
         <div className="chat" ref={scrollRef}>
@@ -668,20 +710,32 @@ export default function App(): JSX.Element {
             <div className="empty-state">
               <h1>Olá, {session.user.name.split(' ')[0] || 'você'}! 👋</h1>
               {active ? (
-                <>
-                  <p>
-                    Conversa <strong>{active.title}</strong> pronta! Converse com{' '}
-                    <strong>{activeProvider?.name ?? 'seu modelo'}</strong> — o modelo tem
-                    ferramentas para ler e escrever arquivos em{' '}
-                    <code>{shortPath(active.folder ?? '')}</code>.
-                  </p>
-                  <p className="hint">As respostas chegam em tempo real, com cada passo explicado.</p>
-                </>
+                activeKind === 'dev' ? (
+                  <>
+                    <p>
+                      Conversa <strong>{active.title}</strong> pronta! Converse com{' '}
+                      <strong>{activeProvider?.name ?? 'seu modelo'}</strong> — o modelo tem
+                      ferramentas para ler e escrever arquivos em{' '}
+                      <code>{shortPath(active.folder ?? '')}</code>.
+                    </p>
+                    <p className="hint">As respostas chegam em tempo real, com cada passo explicado.</p>
+                  </>
+                ) : (
+                  <>
+                    <p>
+                      Conversa <strong>{active.title}</strong> pronta! Converse com{' '}
+                      <strong>{activeProvider?.name ?? 'seu modelo'}</strong>. Conversa simples,
+                      sem pasta de trabalho nem ferramentas de arquivo.
+                    </p>
+                    <p className="hint">As respostas chegam em tempo real. Para trabalhar em arquivos, use a aba <strong>DevMode</strong>.</p>
+                  </>
+                )
               ) : (
                 <>
                   <p>
-                    Clique em <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Plus size={14} /> Nova conversa</strong> no menu lateral, escolha a pasta em
-                    que o modelo vai trabalhar e dê um nome à conversa.
+                    Clique em <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Plus size={14} /> Nova conversa</strong> no menu lateral.
+                    Na aba <strong>Chat</strong> é uma conversa simples; na aba <strong>DevMode</strong> você escolhe uma
+                    pasta e o modelo ganha ferramentas para ler e editar arquivos dela.
                   </p>
                   <p className="hint">
                     Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>.
@@ -717,21 +771,23 @@ export default function App(): JSX.Element {
                 (last?.kind === 'tool' && last.status !== 'running' && last.status !== 'awaiting'))
             return waitingModel ? <div className="thinking">Pensando…</div> : null
           })()}
-          {resumingConv === activeId && (
+          {resumingConv !== null && resumingConv === activeId && (
             <div className="thinking reconnecting">Conexão caiu — retomando automaticamente…</div>
           )}
         </div>
 
         <footer className="composer-area">
           <div className="composer-toolbar">
-            {active?.folder ? (
-              <div className="composer-folder" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Folder size={12} /> {shortPath(active.folder)}
-              </div>
-            ) : (
-              <div className="composer-folder warn" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <AlertTriangle size={12} /> Defina uma pasta de trabalho no cabeçalho para conversar.
-              </div>
+            {activeKind === 'dev' && (
+              active?.folder ? (
+                <div className="composer-folder" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Folder size={12} /> {shortPath(active.folder)}
+                </div>
+              ) : (
+                <div className="composer-folder warn" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <AlertTriangle size={12} /> Defina uma pasta de trabalho no cabeçalho para conversar.
+                </div>
+              )
             )}
           </div>
 
@@ -763,7 +819,7 @@ export default function App(): JSX.Element {
             <div className="composer-input-col">
               <textarea
                 value={input}
-                disabled={!active || !active.folder}
+                disabled={!activeReady}
                 placeholder={
                   active
                     ? 'Escreva ou dite sua mensagem… (Enter envia)'
@@ -784,17 +840,19 @@ export default function App(): JSX.Element {
                 }}
                 rows={2}
               />
-              <div className="composer-under-input">
-                <select 
-                  className="mode-select" 
-                  value={mode} 
-                  onChange={(e) => setMode(e.target.value as 'edit' | 'propose')}
-                  disabled={busy}
-                >
-                  <option value="edit">Editar Arquivos</option>
-                  <option value="propose">Apenas Propor</option>
-                </select>
-              </div>
+              {activeKind === 'dev' && (
+                <div className="composer-under-input">
+                  <select
+                    className="mode-select"
+                    value={mode}
+                    onChange={(e) => setMode(e.target.value as 'edit' | 'propose')}
+                    disabled={busy}
+                  >
+                    <option value="edit">Editar Arquivos</option>
+                    <option value="propose">Apenas Propor</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="composer-actions-col">
@@ -806,27 +864,27 @@ export default function App(): JSX.Element {
                 <button
                   className="send"
                   onClick={send}
-                  disabled={(!input.trim() && attachments.length === 0) || !active || !active.folder}
+                  disabled={(!input.trim() && attachments.length === 0) || !activeReady}
                   style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                   Enviar <Send size={14} />
                 </button>
               )}
-              
+
               <div className="composer-media-actions">
-                <button 
-                  className="attach-btn" 
-                  title="Anexar arquivos de texto" 
+                <button
+                  className="attach-btn"
+                  title="Anexar arquivos de texto"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={!active || !active.folder || busy}
+                  disabled={!activeReady || busy}
                 >
                   <Paperclip size={18} />
                 </button>
-                <button 
-                  className={`mic-btn ${isRecording ? 'recording' : ''}`} 
-                  title="Gravar áudio" 
+                <button
+                  className={`mic-btn ${isRecording ? 'recording' : ''}`}
+                  title="Gravar áudio"
                   onClick={toggleRecording}
-                  disabled={!active || !active.folder || busy}
+                  disabled={!activeReady || busy}
                 >
                   <Mic size={18} />
                 </button>

@@ -54,6 +54,8 @@ export interface OsvaCodeApi {
     password: string,
     serverUrl?: string
   ) => Promise<AuthSession>
+  /** Entra em modo anônimo/local: sem conta e sem Open WebUI; conversas ficam só neste computador. */
+  loginAnonymous: () => Promise<AuthSession>
   logout: () => Promise<void>
   onChatEvent: (callback: (payload: ChatEventPayload) => void) => () => void
 }

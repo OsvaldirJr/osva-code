@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
-import { shortPath, type Conversation } from '../App'
-import { Plus, Folder, Trash2, Plug, Settings, X, LogOut } from 'lucide-react'
+import { shortPath, conversationKind, type Conversation, type ConversationKind } from '../App'
+import { Plus, Folder, Trash2, Plug, Settings, X, LogOut, MessageSquare, Code2 } from 'lucide-react'
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/)
@@ -28,6 +28,9 @@ export function Sidebar({
   conversations,
   activeId,
   generatingId,
+  tab,
+  onTabChange,
+  naming,
   namingFolder,
   remoteChats,
   onImportRemote,
@@ -46,6 +49,9 @@ export function Sidebar({
   conversations: Conversation[]
   activeId: string | null
   generatingId: string | null
+  tab: ConversationKind
+  onTabChange: (tab: ConversationKind) => void
+  naming: boolean
   namingFolder: string | null
   remoteChats: RemoteChatStub[]
   onImportRemote: (remote: RemoteChatStub) => void
@@ -59,8 +65,11 @@ export function Sidebar({
 }): JSX.Element {
   const [newName, setNewName] = useState('')
   const connectedTools = mcpStatus.reduce((sum, s) => sum + s.tools.length, 0)
-  const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
-  // conversas do Open WebUI que ainda não existem localmente
+  // só as conversas da aba atual
+  const sorted = conversations
+    .filter((c) => conversationKind(c) === tab)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+  // conversas do Open WebUI que ainda não existem localmente (só na aba Chat)
   const importable = remoteChats.filter((r) => !conversations.some((c) => c.owuiId === r.id))
 
   const confirm = (): void => {
@@ -79,15 +88,32 @@ export function Sidebar({
         OsvaCode
       </div>
 
-      <button className="new-chat" onClick={onNew} disabled={namingFolder !== null} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <Plus size={16} /> Nova conversa
+      <div className="sidebar-tabs">
+        <button
+          className={tab === 'chat' ? 'active' : ''}
+          onClick={() => onTabChange('chat')}
+        >
+          <MessageSquare size={14} /> Chat
+        </button>
+        <button
+          className={tab === 'dev' ? 'active' : ''}
+          onClick={() => onTabChange('dev')}
+        >
+          <Code2 size={14} /> DevMode
+        </button>
+      </div>
+
+      <button className="new-chat" onClick={onNew} disabled={naming} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <Plus size={16} /> {tab === 'dev' ? 'Nova conversa (pasta)' : 'Nova conversa'}
       </button>
 
-      {namingFolder && (
+      {naming && (
         <div className="naming-box">
-          <span className="naming-folder" title={namingFolder} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Folder size={12} /> {shortPath(namingFolder)}
-          </span>
+          {namingFolder && (
+            <span className="naming-folder" title={namingFolder} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Folder size={12} /> {shortPath(namingFolder)}
+            </span>
+          )}
           <input
             autoFocus
             value={newName}
@@ -111,7 +137,11 @@ export function Sidebar({
 
       <div className="conversation-list">
         {sorted.length === 0 && (
-          <p className="sidebar-empty">Suas conversas aparecerão aqui.</p>
+          <p className="sidebar-empty">
+            {tab === 'dev'
+              ? 'Nenhuma conversa de DevMode ainda. Crie uma e escolha a pasta.'
+              : 'Nenhuma conversa ainda. Crie uma para começar.'}
+          </p>
         )}
         {sorted.map((c) => (
           <div
@@ -140,7 +170,7 @@ export function Sidebar({
           </div>
         ))}
 
-        {settings.openWebUi?.enabled && importable.length > 0 && (
+        {tab === 'chat' && settings.openWebUi?.enabled && importable.length > 0 && (
           <>
             <div className="remote-section-title">🌐 No Open WebUI</div>
             {importable.map((r) => (

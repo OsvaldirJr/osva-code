@@ -73,6 +73,35 @@ body {
   box-shadow: 0 0 8px var(--accent);
 }
 
+.sidebar-tabs {
+  display: flex;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.sidebar-tabs button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 7px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sidebar-tabs button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 .new-chat {
   background: var(--accent);
   color: #fff;
@@ -1210,6 +1239,45 @@ button {
 .login-submit {
   padding: 10px;
   margin: 4px 0 0;
+}
+
+.login-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 2px 0;
+}
+
+.login-or::before,
+.login-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.login-anon {
+  width: 100%;
+  padding: 10px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.login-anon:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.login-anon:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .login-divider {

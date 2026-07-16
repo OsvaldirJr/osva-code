@@ -362,6 +362,23 @@ function registerIpc(): void {
     }
   )
 
+  // Modo anônimo/local: entra sem conta e sem Open WebUI. A sincronização fica
+  // desligada (token vazio) e as conversas são guardadas só neste computador.
+  ipcMain.handle('auth:anonymous', () => {
+    session = {
+      token: '',
+      serverUrl: '',
+      user: {
+        id: 'local',
+        name: settings.userName?.trim() || 'Convidado',
+        email: '',
+        role: 'local'
+      }
+    }
+    saveSessionFile(session)
+    return session
+  })
+
   ipcMain.handle('auth:logout', () => {
     session = null
     clearSessionFile()

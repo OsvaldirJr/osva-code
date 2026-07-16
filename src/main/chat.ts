@@ -5,30 +5,40 @@ import type { McpManager } from './mcp'
 import { explainToolCall, summarizeToolResult, SIMPLIFY_SYSTEM_PROMPT } from './humanizer'
 
 /**
- * Tempo máximo SEM receber nenhum pedaço do streaming antes de considerar a
- * conexão morta. Cobre o caso do computador suspender (dormir): o socket fica
- * meio-aberto e o `for await` esperaria para sempre. Uma geração saudável
- * emite tokens continuamente, então esse silêncio só acontece quando travou.
+ * Espera pelo PRIMEIRO pedaço. Modelos podem demorar muito para começar —
+ * carregar na memória, processar um prompt grande, "pensar". Máquinas sob
+ * pressão de RAM (swap) deixam isso ainda mais lento. Janela generosa de
+ * propósito: lentidão no início NÃO é queda de conexão.
  */
-const STREAM_IDLE_TIMEOUT_MS = 120_000
+const FIRST_CHUNK_TIMEOUT_MS = 300_000
+/**
+ * Pausa máxima ENTRE pedaços depois que o streaming já começou. Aí um silêncio
+ * longo indica conexão morta de verdade (ex.: o computador suspendeu e o socket
+ * ficou meio-aberto), e não apenas um modelo lento.
+ */
+const IDLE_TIMEOUT_MS = 90_000
 
 /**
- * Repassa os pedaços do streaming rearmando um timer a cada um. Se o silêncio
- * passar de `ms`, aborta `idle` — o que derruba o fetch e faz o laço estourar.
+ * Repassa os pedaços do streaming rearmando um timer a cada um. Usa uma janela
+ * maior até o primeiro pedaço e outra, menor, para as pausas seguintes. Se o
+ * silêncio estourar, aborta `idle` — o que derruba o fetch e faz o laço parar.
  */
 async function* watchIdle<T>(
   stream: AsyncIterable<T>,
   idle: AbortController,
-  ms: number
+  firstMs: number,
+  idleMs: number
 ): AsyncGenerator<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let started = false
   const arm = (): void => {
     if (timer) clearTimeout(timer)
-    timer = setTimeout(() => idle.abort(), ms)
+    timer = setTimeout(() => idle.abort(), started ? idleMs : firstMs)
   }
   try {
     arm()
     for await (const chunk of stream) {
+      started = true
       arm()
       yield chunk
     }
@@ -180,7 +190,7 @@ export async function runChat(options: {
       let assistantText = ''
       const toolCalls: PendingToolCall[] = []
 
-      for await (const chunk of watchIdle(stream, idleAbort, STREAM_IDLE_TIMEOUT_MS)) {
+      for await (const chunk of watchIdle(stream, idleAbort, FIRST_CHUNK_TIMEOUT_MS, IDLE_TIMEOUT_MS)) {
         const delta = chunk.choices[0]?.delta
         if (!delta) continue
         if (delta.content) {
@@ -311,8 +321,8 @@ export async function runChat(options: {
       emit({
         type: 'interrupted',
         message:
-          'A resposta parou de chegar — a conexão com o modelo caiu (o computador pode ter suspendido). ' +
-          'Clique em Continuar para gerar a resposta novamente.'
+          'A resposta parou de chegar — o modelo pode estar sobrecarregado/muito lento, ou o ' +
+          'computador suspendeu. Clique em Continuar para tentar de novo.'
       })
       return
     }
@@ -342,7 +352,7 @@ export async function runSimplify(options: {
       },
       { signal: AbortSignal.any([signal, idleAbort.signal]) }
     )
-    for await (const chunk of watchIdle(stream, idleAbort, STREAM_IDLE_TIMEOUT_MS)) {
+    for await (const chunk of watchIdle(stream, idleAbort, FIRST_CHUNK_TIMEOUT_MS, IDLE_TIMEOUT_MS)) {
       const token = chunk.choices[0]?.delta?.content
       if (token) emit({ type: 'token', text: token })
     }
