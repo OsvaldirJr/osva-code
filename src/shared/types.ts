@@ -26,6 +26,22 @@ export interface OpenWebUiConfig {
   enabled: boolean
 }
 
+/** Uma etapa de uma equipe: qual modelo entra e o que ele faz. */
+export interface AgentStep {
+  id: string
+  name: string
+  /** Instrução desta etapa. O modelo mais capaz pode ficar no meio do caminho. */
+  role: string
+  providerId: string
+}
+
+/** Equipe ordenada. A ordem é o caminho da tarefa. */
+export interface AgentTeam {
+  id: string
+  name: string
+  steps: AgentStep[]
+}
+
 export interface AuthUser {
   id: string
   name: string
@@ -50,6 +66,8 @@ export interface AppSettings {
   toolPermissions: Record<string, 'always'>
   /** Sincronização de conversas com o Open WebUI. */
   openWebUi: OpenWebUiConfig
+  /** Equipes de agentes para tarefas que precisam de mais de um modelo. */
+  teams: AgentTeam[]
 }
 
 /** Conversa existente no Open WebUI (para importação). */
@@ -96,6 +114,8 @@ export interface ChatSendOptions {
   folder?: string | null
   /** Se 'edit', permite edição. Se 'propose', apenas propõe sem editar arquivos. Padrão: 'edit'. */
   mode?: 'edit' | 'propose'
+  /** Equipe desta mensagem. Vazio = só o modelo ativo. */
+  teamId?: string | null
 }
 
 /** Eventos emitidos pelo processo principal durante uma geração. */
@@ -119,8 +139,53 @@ export type StreamEvent =
   | { type: 'tool-end'; callId: string; ok: boolean; denied?: boolean; summary: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  | {
+      type: 'agent-start'
+      agentId: string
+      name: string
+      modelLabel: string
+      role: string
+      index: number
+      total: number
+    }
+  | { type: 'agent-end'; agentId: string; ok: boolean; summary: string }
+  /** Arquivo da pasta de trabalho criado, editado ou removido durante a geração. */
+  | { type: 'file-change'; change: FileChange }
   /** Geração interrompida por algo externo (computador dormiu, conexão caiu): é retomável. */
   | { type: 'interrupted'; message: string }
+
+export interface DiffLine {
+  type: 'ctx' | 'add' | 'del' | 'gap'
+  text: string
+}
+
+/** Diferença de um arquivo, pronta para o painel de alterações. */
+export interface FileChange {
+  /** Caminho relativo à pasta de trabalho, com barras /. */
+  path: string
+  kind: 'added' | 'modified' | 'deleted'
+  additions: number
+  deletions: number
+  lines: DiffLine[]
+  /** Conteúdo final, só para HTML, SVG e Markdown, para pré-visualizar. */
+  preview?: string
+}
+
+/** Retângulo do navegador embutido, em pixels CSS da janela. */
+export interface BrowserBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface BrowserState {
+  url: string
+  title: string
+  canGoBack: boolean
+  canGoForward: boolean
+  loading: boolean
+}
 
 export interface ChatEventPayload {
   requestId: string

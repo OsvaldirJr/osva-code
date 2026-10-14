@@ -111,6 +111,11 @@ export class McpManager {
     this.rebuildToolIndex()
   }
 
+  /** Pasta em que as ferramentas de arquivo estão presas, ou null. */
+  workspaceFolder(): string | null {
+    return this.workspace?.folder ?? null
+  }
+
   private rebuildToolIndex(): void {
     this.toolIndex.clear()
     for (const [id, server] of this.servers) {

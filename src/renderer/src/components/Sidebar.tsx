@@ -1,7 +1,6 @@
-import { useState } from 'react'
 import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
-import { shortPath, conversationKind, type Conversation, type ConversationKind } from '../App'
-import { Plus, Folder, Trash2, Plug, Settings, X, LogOut, MessageSquare, Code2 } from 'lucide-react'
+import { conversationKind, folderKey, folderLabel, type Conversation, type ConversationKind } from '../App'
+import { Plus, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download } from 'lucide-react'
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/)
@@ -20,6 +19,47 @@ function formatWhen(timestamp: number): string {
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
 }
 
+interface ConversationGroup {
+  key: string
+  label: string
+  title: string
+  items: Conversation[]
+}
+
+/** No DevMode, agrupa pela pasta de trabalho. No Chat, uma lista só. */
+function groupConversations(list: Conversation[], tab: ConversationKind): ConversationGroup[] {
+  const sorted = [...list].sort((a, b) => b.updatedAt - a.updatedAt)
+  if (tab !== 'dev') {
+    return [{ key: 'all', label: '', title: '', items: sorted }]
+  }
+
+  const groups = new Map<string, ConversationGroup>()
+  for (const conversation of sorted) {
+    const key = conversation.folder ? folderKey(conversation.folder) : ''
+    let group = groups.get(key)
+    if (!group) {
+      const label = conversation.folder ? folderLabel(conversation.folder) : 'Sem pasta'
+      group = {
+        key: key || 'none',
+        label,
+        title: conversation.folder ?? 'Sem pasta de trabalho',
+        items: []
+      }
+      groups.set(key, group)
+    }
+    group.items.push(conversation)
+  }
+
+  const counts = new Map<string, number>()
+  for (const group of groups.values()) counts.set(group.label, (counts.get(group.label) ?? 0) + 1)
+  return [...groups.values()].map((group) => {
+    if (!group.title || (counts.get(group.label) ?? 0) < 2) return group
+    const parts = group.title.split('/').filter(Boolean)
+    const parent = parts.length >= 2 ? parts[parts.length - 2] : ''
+    return parent ? { ...group, label: `${parent}/${group.label}` } : group
+  })
+}
+
 export function Sidebar({
   user,
   onLogout,
@@ -30,14 +70,10 @@ export function Sidebar({
   generatingId,
   tab,
   onTabChange,
-  naming,
-  namingFolder,
   remoteChats,
   onImportRemote,
   onSelect,
   onNew,
-  onConfirmNew,
-  onCancelNew,
   onDelete,
   onChangeProvider,
   onOpenSettings
@@ -51,35 +87,19 @@ export function Sidebar({
   generatingId: string | null
   tab: ConversationKind
   onTabChange: (tab: ConversationKind) => void
-  naming: boolean
-  namingFolder: string | null
   remoteChats: RemoteChatStub[]
   onImportRemote: (remote: RemoteChatStub) => void
   onSelect: (id: string) => void
   onNew: () => void
-  onConfirmNew: (name: string) => void
-  onCancelNew: () => void
   onDelete: (id: string) => void
   onChangeProvider: (providerId: string) => void
   onOpenSettings: () => void
 }): JSX.Element {
-  const [newName, setNewName] = useState('')
   const connectedTools = mcpStatus.reduce((sum, s) => sum + s.tools.length, 0)
-  // só as conversas da aba atual
-  const sorted = conversations
-    .filter((c) => conversationKind(c) === tab)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+  const visible = conversations.filter((c) => conversationKind(c) === tab)
+  const groups = groupConversations(visible, tab)
   // conversas do Open WebUI que ainda não existem localmente (só na aba Chat)
   const importable = remoteChats.filter((r) => !conversations.some((c) => c.owuiId === r.id))
-
-  const confirm = (): void => {
-    onConfirmNew(newName)
-    setNewName('')
-  }
-  const cancel = (): void => {
-    onCancelNew()
-    setNewName('')
-  }
 
   return (
     <aside className="sidebar">
@@ -103,76 +123,61 @@ export function Sidebar({
         </button>
       </div>
 
-      <button className="new-chat" onClick={onNew} disabled={naming} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <button className="new-chat" onClick={onNew} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         <Plus size={16} /> {tab === 'dev' ? 'Nova conversa (pasta)' : 'Nova conversa'}
       </button>
 
-      {naming && (
-        <div className="naming-box">
-          {namingFolder && (
-            <span className="naming-folder" title={namingFolder} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Folder size={12} /> {shortPath(namingFolder)}
-            </span>
-          )}
-          <input
-            autoFocus
-            value={newName}
-            placeholder="Nome da conversa…"
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') confirm()
-              if (e.key === 'Escape') cancel()
-            }}
-          />
-          <div className="naming-actions">
-            <button className="naming-create" onClick={confirm}>
-              Criar
-            </button>
-            <button className="ghost icon" title="Cancelar" onClick={cancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <X size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="conversation-list">
-        {sorted.length === 0 && (
+        {visible.length === 0 && (
           <p className="sidebar-empty">
             {tab === 'dev'
-              ? 'Nenhuma conversa de DevMode ainda. Crie uma e escolha a pasta.'
+              ? 'Nenhuma conversa de DevMode ainda. Escolha a pasta: as desta mesma pasta ficam juntas.'
               : 'Nenhuma conversa ainda. Crie uma para começar.'}
           </p>
         )}
-        {sorted.map((c) => (
-          <div
-            key={c.id}
-            className={`conversation-item ${c.id === activeId ? 'active' : ''}`}
-            onClick={() => onSelect(c.id)}
-          >
-            <div className="conversation-text">
-              <span className="conversation-title">
-                {c.id === generatingId && <span className="generating-dot" />}
-                {c.title}
-              </span>
-              <span className="conversation-when">{formatWhen(c.updatedAt)}</span>
-            </div>
-            <button
-              className="conversation-delete"
-              title="Apagar conversa"
-              onClick={(e) => {
-                e.stopPropagation()
-                onDelete(c.id)
-              }}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            >
-              <Trash2 size={16} />
-            </button>
+        {groups.map((group) => (
+          <div key={group.key} className="conversation-group">
+            {group.label && (
+              <div className="conversation-group-title" title={group.title}>
+                <Folder size={12} />
+                <span className="conversation-group-label">{group.label}</span>
+                <span className="conversation-group-count">{group.items.length}</span>
+              </div>
+            )}
+            {group.items.map((c) => (
+              <div
+                key={c.id}
+                className={`conversation-item ${c.id === activeId ? 'active' : ''}`}
+                onClick={() => onSelect(c.id)}
+              >
+                <div className="conversation-text">
+                  <span className="conversation-title">
+                    {c.id === generatingId && <span className="generating-dot" />}
+                    {c.title}
+                  </span>
+                  <span className="conversation-when">{formatWhen(c.updatedAt)}</span>
+                </div>
+                <button
+                  className="conversation-delete"
+                  title="Apagar conversa"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDelete(c.id)
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
           </div>
         ))}
 
         {tab === 'chat' && settings.openWebUi?.enabled && importable.length > 0 && (
           <>
-            <div className="remote-section-title">🌐 No Open WebUI</div>
+            <div className="remote-section-title">
+              <Globe size={12} /> No Open WebUI
+            </div>
             {importable.map((r) => (
               <div
                 key={r.id}
@@ -184,7 +189,9 @@ export function Sidebar({
                   <span className="conversation-title">{r.title}</span>
                   <span className="conversation-when">{formatWhen(r.updatedAt * 1000)}</span>
                 </div>
-                <span className="remote-import">⬇</span>
+                <span className="remote-import">
+                  <Download size={14} />
+                </span>
               </div>
             ))}
           </>
@@ -218,8 +225,8 @@ export function Sidebar({
         <div className="user-row">
           <span className="avatar">{initials(user.name)}</span>
           <span className="user-name" title={user.email || user.name}>
-            {user.name}
-            {user.role === 'local' && <span className="user-mode"> · local</span>}
+            <span className="user-name-text">{user.name}</span>
+            {user.role === 'local' && <span className="user-mode">modo local</span>}
           </span>
           <button className="ghost icon" title="Configurações" onClick={onOpenSettings} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Settings size={18} />

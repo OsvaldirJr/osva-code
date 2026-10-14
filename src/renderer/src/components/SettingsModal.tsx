@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { AppSettings, McpServerConfig, McpServerStatus, ProviderConfig } from '../../../shared/types'
-import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X } from 'lucide-react'
+import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users } from 'lucide-react'
+import { AgentTeamsPanel } from './AgentTeamsPanel'
 
-type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync'
+type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes'
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
@@ -133,7 +134,14 @@ export function SettingsModal({
             onClick={() => setTab('sync')}
             style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
-            🌐 Sincronizar
+            <Cloud size={14} /> Sincronizar
+          </button>
+          <button
+            className={tab === 'equipes' ? 'active' : ''}
+            onClick={() => setTab('equipes')}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Users size={14} /> Equipes
           </button>
         </nav>
 
@@ -373,6 +381,8 @@ export function SettingsModal({
               />
             </>
           )}
+
+          {tab === 'equipes' && <AgentTeamsPanel draft={draft} setDraft={setDraft} />}
 
           {tab === 'sync' && (
             <>

@@ -38,7 +38,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     url: DEFAULT_OPENWEBUI_URL,
     apiKey: '',
     enabled: false
-  }
+  },
+  teams: []
 }
 
 function defaultUserName(): string {
@@ -57,8 +58,12 @@ function settingsPath(): string {
 export function loadSettings(): AppSettings {
   try {
     if (existsSync(settingsPath())) {
-      const raw = JSON.parse(readFileSync(settingsPath(), 'utf-8'))
-      return { ...DEFAULT_SETTINGS, ...raw }
+      const raw = JSON.parse(readFileSync(settingsPath(), 'utf-8')) as Partial<AppSettings>
+      return {
+        ...DEFAULT_SETTINGS,
+        ...raw,
+        teams: Array.isArray(raw.teams) ? raw.teams : []
+      }
     }
   } catch (err) {
     console.error('Falha ao ler settings.json, usando padrões:', err)

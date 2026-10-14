@@ -1,8 +1,18 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } from 'electron'
+import {
+  attachEmbeddedBrowser,
+  browserCommand,
+  browserNavigate,
+  browserOpenExternal,
+  browserOpenFile,
+  browserState,
+  setBrowserBounds
+} from './browser'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { DEFAULT_OPENWEBUI_URL, loadSettings, saveSettings } from './config'
 import { McpManager } from './mcp'
+import { runTeam } from './agents'
 import { listModels, runChat, runSimplify, type PermissionRequest } from './chat'
 import { owuiDeleteChat, owuiListChats, owuiPullChat, owuiPushChat, type OwuiAuth } from './sync'
 import { clearSessionFile, loadSessionFile, owuiSignin, owuiSignup, saveSessionFile } from './auth'
@@ -24,6 +34,7 @@ import type {
   AuthSession,
   ChatEventPayload,
   ChatMessage,
+  BrowserBounds,
   ChatSendOptions,
   PermissionDecision,
   StreamEvent,
@@ -38,7 +49,8 @@ let settings: AppSettings = {
   systemPrompt: '',
   userName: '',
   toolPermissions: {},
-  openWebUi: { url: '', apiKey: '', enabled: false }
+  openWebUi: { url: '', apiKey: '', enabled: false },
+  teams: []
 }
 const mcp = new McpManager()
 const activeRequests = new Map<string, AbortController>()
@@ -118,7 +130,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 560,
     title: 'OsvaCode',
-    backgroundColor: '#0f1117',
+    backgroundColor: '#090b10',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -129,6 +141,12 @@ function createWindow(): void {
     shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+
+  attachEmbeddedBrowser(mainWindow, () => mcp.workspaceFolder())
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -188,7 +206,11 @@ function registerIpc(): void {
     'chat:send',
     async (_event, requestId: string, history: ChatMessage[], options?: ChatSendOptions) => {
       const provider = activeProvider()
-      if (!provider) {
+      const team = options?.teamId
+        ? (settings.teams ?? []).find((item) => item.id === options.teamId)
+        : undefined
+      const useTeam = !!team && team.steps.length > 0
+      if (!useTeam && !provider) {
         emitTo(requestId, {
           type: 'error',
           message: 'Nenhum provedor de modelo configurado. Abra as Configurações.'
@@ -201,13 +223,11 @@ function registerIpc(): void {
       await mcp.setWorkspace(folder)
 
       let systemPrompt = folder
-        ? `${settings.systemPrompt}\n\nPasta de trabalho desta conversa: ${folder}.\n` +
-          'Você tem ferramentas para listar, ler e escrever arquivos dentro dela.\n' +
-          'Regras EXTREMAMENTE IMPORTANTES para trabalhar com arquivos:\n' +
-          `1. SEMPRE use caminhos absolutos iniciando com a pasta de trabalho (ex: ${folder}/arquivo.ts).\n` +
-          '2. NUNCA use caminhos relativos (como ./ ou ../) ou adivinhe caminhos de arquivos.\n' +
-          '3. Antes de ler ou modificar arquivos, use a ferramenta de listar diretórios para descobrir a estrutura correta e os nomes exatos das pastas e arquivos.\n' +
-          'Quando o usuário mencionar arquivos ou "esta pasta", aplique essas regras.'
+        ? `${settings.systemPrompt}\n\nPasta de trabalho: ${folder}.\n` +
+          'Você pode ler e editar os arquivos desta pasta. Mantenha o contexto das mensagens anteriores. ' +
+          'Se o usuário pedir para alterar um arquivo já criado, grave de novo no mesmo caminho. ' +
+          'Se ele só perguntar, responda em texto e não crie outro arquivo. ' +
+          `O path do arquivo é absoluto e começa com ${folder} uma única vez. Não repita essa pasta no meio do caminho.`
         : settings.systemPrompt
 
       if (folder) {
@@ -224,15 +244,32 @@ function registerIpc(): void {
 
       const controller = new AbortController()
       activeRequests.set(requestId, controller)
-      void runChat({
-        provider,
-        systemPrompt,
-        history,
-        mcp,
-        emit: (event) => emitTo(requestId, event),
-        requestPermission: (request) => resolvePermission(requestId, request, controller.signal),
-        signal: controller.signal
-      }).finally(() => activeRequests.delete(requestId))
+      const emit = (event: Parameters<typeof emitTo>[1]): void => emitTo(requestId, event)
+      const requestPermission = (request: PermissionRequest): Promise<'allow' | 'deny'> =>
+        resolvePermission(requestId, request, controller.signal)
+      const run = useTeam
+        ? runTeam({
+            team: team!,
+            providers: settings.providers,
+            systemPrompt,
+            history,
+            mcp,
+            emit,
+            requestPermission,
+            signal: controller.signal,
+            allowFileWrites: mode !== 'propose'
+          })
+        : runChat({
+            provider: provider!,
+            systemPrompt,
+            history,
+            mcp,
+            emit,
+            requestPermission,
+            signal: controller.signal,
+            allowFileWrites: mode !== 'propose'
+          })
+      void run.finally(() => activeRequests.delete(requestId))
     }
   )
 
@@ -382,6 +419,19 @@ function registerIpc(): void {
   ipcMain.handle('auth:logout', () => {
     session = null
     clearSessionFile()
+  })
+
+  ipcMain.handle('browser:navigate', (_event, url: string) => browserNavigate(url))
+  ipcMain.handle('browser:open-file', (_event, relativePath: string) => browserOpenFile(relativePath))
+  ipcMain.handle('browser:command', (_event, command: 'back' | 'forward' | 'reload' | 'stop') =>
+    browserCommand(command)
+  )
+  ipcMain.handle('browser:bounds', (_event, bounds: BrowserBounds | null) => {
+    setBrowserBounds(bounds)
+  })
+  ipcMain.handle('browser:state', () => browserState())
+  ipcMain.handle('browser:external', () => {
+    browserOpenExternal()
   })
 }
 

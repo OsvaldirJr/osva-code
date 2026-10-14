@@ -1,6 +1,8 @@
 import type {
   AppSettings,
   AuthSession,
+  BrowserBounds,
+  BrowserState,
   ChatEventPayload,
   ChatMessage,
   ChatSendOptions,
@@ -58,4 +60,15 @@ export interface OsvaCodeApi {
   loginAnonymous: () => Promise<AuthSession>
   logout: () => Promise<void>
   onChatEvent: (callback: (payload: ChatEventPayload) => void) => () => void
+  /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */
+  navigateBrowser: (url: string) => Promise<BrowserState>
+  /** Abre um arquivo da pasta de trabalho atual no navegador embutido. */
+  openBrowserFile: (relativePath: string) => Promise<BrowserState>
+  browserCommand: (command: 'back' | 'forward' | 'reload' | 'stop') => Promise<BrowserState>
+  /** null esconde a view nativa (aba fechada, modal aberto ou painel oculto). */
+  setBrowserBounds: (bounds: BrowserBounds | null) => Promise<void>
+  getBrowserState: () => Promise<BrowserState>
+  /** Abre a URL atual no navegador do sistema. */
+  openBrowserExternal: () => Promise<void>
+  onBrowserState: (callback: (state: BrowserState) => void) => () => void
 }

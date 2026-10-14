@@ -153,8 +153,8 @@ export function LoginScreen({
           />
         </label>
 
-        {error && <p className="login-error">⚠️ {error}</p>}
-        {notice && <p className="login-notice">✅ {notice}</p>}
+        {error && <p className="login-error">{error}</p>}
+        {notice && <p className="login-notice">{notice}</p>}
 
         <button className="send login-submit" onClick={() => void submit()} disabled={busy || !canSubmit}>
           {busy ? 'Aguarde…' : mode === 'signin' ? 'Entrar' : 'Criar cadastro'}

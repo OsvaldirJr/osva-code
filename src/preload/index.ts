@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ChatEventPayload } from '../shared/types'
+import type { BrowserState, ChatEventPayload } from '../shared/types'
 import type { OsvaCodeApi } from '../shared/api'
 
 const api: OsvaCodeApi = {
@@ -40,6 +40,17 @@ const api: OsvaCodeApi = {
       callback(payload)
     ipcRenderer.on('chat:event', listener)
     return () => ipcRenderer.removeListener('chat:event', listener)
+  },
+  navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
+  openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),
+  browserCommand: (command) => ipcRenderer.invoke('browser:command', command),
+  setBrowserBounds: (bounds) => ipcRenderer.invoke('browser:bounds', bounds),
+  getBrowserState: () => ipcRenderer.invoke('browser:state'),
+  openBrowserExternal: () => ipcRenderer.invoke('browser:external'),
+  onBrowserState: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: BrowserState): void => callback(state)
+    ipcRenderer.on('browser:state', listener)
+    return () => ipcRenderer.removeListener('browser:state', listener)
   }
 }
 

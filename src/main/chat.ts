@@ -1,7 +1,11 @@
+import { existsSync, readFileSync, statSync } from 'fs'
+import { basename } from 'path'
 import OpenAI from 'openai'
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions'
-import type { ChatMessage, ProviderConfig, StreamEvent } from '../shared/types'
+import type { ChatMessage, FileChange, ProviderConfig, StreamEvent } from '../shared/types'
 import type { McpManager } from './mcp'
+import { beginFileChange } from './changes'
+import { applyWorkspaceEdit, normalizeWorkspacePath } from './fileEdit'
 import { explainToolCall, summarizeToolResult, SIMPLIFY_SYSTEM_PROMPT } from './humanizer'
 
 /**
@@ -63,15 +67,257 @@ function makeClient(provider: ProviderConfig): OpenAI {
   })
 }
 
+/** Ferramentas da pasta que um modelo pequeno só repete em vez de usar. */
+const WORKSPACE_SKIP = new Set([
+  'list_directory_with_sizes',
+  'directory_tree',
+  'list_allowed_directories',
+  'read_media_file',
+  'read_multiple_files',
+  'get_file_info'
+])
+
+const WORKSPACE_DESCRIPTION: Record<string, string> = {
+  list_directory: 'Lista arquivos e pastas. Parâmetro path: caminho absoluto.',
+  read_text_file: 'Lê o texto de um arquivo. Parâmetro path: caminho absoluto.',
+  read_file: 'Lê o texto de um arquivo. Parâmetro path: caminho absoluto.',
+  write_file: 'Cria ou substitui um arquivo. Parâmetros path (absoluto) e content (texto completo).',
+  edit_file:
+    'Altera trechos de um arquivo existente. Parâmetros path (absoluto) e edits: lista de {oldText, newText}. oldText é o trecho atual copiado do arquivo.',
+  create_directory: 'Cria uma pasta. Parâmetro path: caminho absoluto.',
+  move_file: 'Move ou renomeia. Parâmetros source e destination, caminhos absolutos.',
+  search_files: 'Procura arquivos pelo nome. Parâmetros path e pattern.'
+}
+
 function buildTools(mcp: McpManager): ChatCompletionTool[] {
-  return mcp.listNamespacedTools().map((entry) => ({
-    type: 'function',
-    function: {
-      name: entry.fullName,
-      description: entry.tool.description ?? `Ferramenta ${entry.tool.name} do servidor ${entry.serverName}`,
-      parameters: (entry.tool.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
+  const all = mcp.listNamespacedTools()
+  const hasReadText = all.some(
+    (entry) => entry.serverId === '__workspace' && entry.tool.name === 'read_text_file'
+  )
+  return all.flatMap((entry) => {
+    const workspace = entry.serverId === '__workspace'
+    if (workspace && (WORKSPACE_SKIP.has(entry.tool.name) || (hasReadText && entry.tool.name === 'read_file'))) {
+      return []
     }
-  }))
+    const rawDescription =
+      entry.tool.description ?? `Ferramenta ${entry.tool.name} do servidor ${entry.serverName}`
+    return [
+      {
+        type: 'function' as const,
+        function: {
+          name: entry.fullName,
+          description: workspace
+            ? (WORKSPACE_DESCRIPTION[entry.tool.name] ?? firstSentence(rawDescription))
+            : rawDescription,
+          parameters: workspace
+            ? slimSchema(entry.tool.inputSchema as Record<string, unknown> | undefined)
+            : ((entry.tool.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} })
+        }
+      }
+    ]
+  })
+}
+
+function firstSentence(text: string): string {
+  const clean = text.replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim()
+  return clean.slice(0, 180) || 'Ferramenta de arquivo.'
+}
+
+/** Tira descrições e exemplos do schema. Modelos pequenos copiam esse texto em vez de chamar a ferramenta. */
+function slimSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!schema) return { type: 'object', properties: {} }
+  const clone = JSON.parse(JSON.stringify(schema)) as unknown
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      node.forEach(walk)
+      return
+    }
+    const obj = node as Record<string, unknown>
+    delete obj.description
+    delete obj.title
+    delete obj.examples
+    delete obj.$schema
+    for (const value of Object.values(obj)) walk(value)
+  }
+  walk(clone)
+  return clone as Record<string, unknown>
+}
+
+/** Último arquivo citado pelo usuário em qualquer mensagem, não só na última. */
+function intendedFileName(history: ChatMessage[]): string | null {
+  const text = history
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content)
+    .join('\n')
+  const matches = [...text.matchAll(/\b([\w.-]+\.(?:html?|css|jsx?|tsx?|md|json|py|txt))\b/gi)]
+  if (matches.length > 0) return basename(matches[matches.length - 1][1])
+  if (/html|p[aá]gina/i.test(text)) return 'index.html'
+  return null
+}
+
+function userAskedForFile(basenameName: string, history: ChatMessage[]): boolean {
+  const text = history
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content)
+    .join('\n')
+  return text.toLowerCase().includes(basenameName.toLowerCase())
+}
+
+function pathInside(folder: string, input: string): string | null {
+  return normalizeWorkspacePath(folder, input)
+}
+
+function isDirectory(abs: string): boolean {
+  try {
+    return existsSync(abs) && statSync(abs).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function fenceContent(text: string): string | null {
+  const match = text.match(/```[^\n]*\n([\s\S]*?)```/)
+  const body = match?.[1]?.trim()
+  return body || null
+}
+
+/** O llama local manda os argumentos dentro de parameters, não no topo do JSON. */
+function nestedArgs(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === 'string') {
+    try {
+      return nestedArgs(JSON.parse(value))
+    } catch {
+      return null
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  return null
+}
+
+function flattenToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const nested = nestedArgs(args.parameters) ?? nestedArgs(args.arguments) ?? nestedArgs(args.function)
+  if (!nested) return { ...args }
+  const functionArgs = nestedArgs(nested.arguments) ?? nestedArgs(nested.parameters)
+  return { ...args, ...nested, ...(functionArgs ?? {}) }
+}
+
+/**
+ * O modelo local às vezes chama write_file com path vazio ou apontando para a
+ * pasta. O servidor recusa com "not a regular file". Aqui o caminho vira o
+ * arquivo que o usuário pediu, e o conteúdo pode vir de um bloco de código.
+ */
+function repairWorkspaceArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  folder: string,
+  history: ChatMessage[],
+  assistantText: string
+): Record<string, unknown> {
+  const fileTools = new Set(['write_file', 'edit_file', 'read_file', 'read_text_file', 'move_file'])
+  if (!fileTools.has(toolName)) return args
+  const copy = flattenToolArgs(args)
+  if (toolName === 'move_file') return copy
+  const raw = typeof copy.path === 'string' ? copy.path : typeof copy.file_path === 'string' ? copy.file_path : ''
+  let abs = raw.trim() ? pathInside(folder, raw.trim()) : null
+  const remembered = intendedFileName(history)
+  const inventedTxt = !!abs && basename(abs).toLowerCase() === 'index.txt' && !userAskedForFile('index.txt', history)
+  if (!abs || isDirectory(abs) || inventedTxt) {
+    if (remembered) abs = pathInside(folder, remembered)
+  }
+  if (abs) {
+    copy.path = abs
+    delete copy.file_path
+  }
+  // head/tail 0 faz a leitura “funcionar” sem devolver nenhuma linha.
+  for (const key of ['head', 'tail'] as const) {
+    const value = copy[key]
+    const count = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+    if (!Number.isFinite(count) || count <= 0) delete copy[key]
+  }
+  if (toolName === 'write_file') {
+    let content = typeof copy.content === 'string' ? copy.content : ''
+    if (!content.trim()) {
+      const fromText = fenceContent(assistantText)
+      if (fromText && !isPlaceholderContent(fromText)) content = fromText
+    }
+    return { path: copy.path, content }
+  }
+  return copy
+}
+
+function isPlaceholderContent(content: string): boolean {
+  const compact = content.replace(/\s+/g, ' ').trim().toLowerCase()
+  return (
+    compact === 'texto completo do arquivo' ||
+    compact === 'conteúdo completo' ||
+    compact === 'conteudo completo' ||
+    compact === '<html></html>' ||
+    compact === '<html>...</html>' ||
+    compact === '<html><body></body></html>'
+  )
+}
+
+function invalidWrite(args: Record<string, unknown>): string | null {
+  const path = typeof args.path === 'string' ? args.path : ''
+  const content = typeof args.content === 'string' ? args.content : ''
+  if (!path || isDirectory(path)) {
+    return 'O caminho enviado foi a pasta, não um arquivo. write_file precisa de um arquivo, como index.html.'
+  }
+  if (!content.trim() || isPlaceholderContent(content)) {
+    return `write_file não foi gravado em ${path || 'arquivo indefinido'}: o conteúdo veio vazio ou era só um texto de exemplo. Use o arquivo que o usuário já citou e coloque nele o texto real do pedido.`
+  }
+  return destructiveRewrite(path, content)
+}
+
+/**
+ * Num pedido de alteração o modelo pequeno manda write_file só com o trecho
+ * novo ("Bem-vindo") e o HTML inteiro some. Recusa e pede o arquivo completo.
+ */
+function destructiveRewrite(path: string, content: string): string | null {
+  const before = currentText(path)
+  if (!before || before.trim().length < 200) return null
+  const wasDocument = /<!doctype|<html|<body/i.test(before)
+  const losesMarkup = wasDocument && !/<[a-z!][^>]*>/i.test(content)
+  const tiny = content.trim().length < before.trim().length * 0.25 && !content.includes('\n')
+  if (!losesMarkup && !tiny) return null
+  return (
+    `write_file não foi gravado: ${path} tem ${before.length} caracteres e o conteúdo novo só ${content.length}, ` +
+    'o que apagaria o resto do arquivo. Para alterar um arquivo, mande em content o arquivo INTEIRO já modificado, ' +
+    'partindo do conteúdo atual, ou use edit_file com o trecho exato.'
+  )
+}
+
+const MAX_CONTEXT_FILE_CHARS = 20_000
+
+function currentText(abs: string): string | null {
+  try {
+    if (!existsSync(abs) || !statSync(abs).isFile() || statSync(abs).size > MAX_CONTEXT_FILE_CHARS * 2) return null
+    return readFileSync(abs, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * O histórico só leva o texto das mensagens, não o resultado das ferramentas.
+ * Num pedido de alteração o modelo não sabia o que havia no arquivo e chutava
+ * o oldText ou regravava só o trecho novo. Aqui vai o conteúdo atual junto.
+ */
+function currentFileBlock(folder: string, history: ChatMessage[]): string {
+  const name = intendedFileName(history)
+  if (!name) return ''
+  const abs = pathInside(folder, name)
+  if (!abs) return ''
+  const text = currentText(abs)
+  if (text == null || text.length > MAX_CONTEXT_FILE_CHARS) return ''
+  const lang = name.split('.').pop() ?? ''
+  return (
+    `\n\nO arquivo ${abs} já existe. Conteúdo atual:\n\`\`\`${lang}\n${text}\n\`\`\`\n` +
+    'Para alterá-lo, chame write_file com este mesmo path e o arquivo inteiro já modificado, ' +
+    'ou edit_file com oldText copiado exatamente deste conteúdo.'
+  )
 }
 
 interface PendingToolCall {
@@ -112,13 +358,19 @@ function extractTextualToolCalls(text: string, mcp: McpManager): PendingToolCall
     try {
       const obj = JSON.parse(candidate) as {
         name?: unknown
+        function?: unknown
         arguments?: unknown
         parameters?: unknown
       }
+      // O llama pequeno também escreve {"type":"function","function":{"name":...,"parameters":...}}
+      // ou {"function":"nome","parameters":...}.
+      const fn = obj.function
+      const inner = fn && typeof fn === 'object' && !Array.isArray(fn) ? (fn as Record<string, unknown>) : null
+      const name = typeof obj.name === 'string' ? obj.name : typeof fn === 'string' ? fn : inner?.name
       // aceita nome completo (servidor__ferramenta) ou o nome "cru" (ex.: "read_file")
-      const entry = typeof obj.name === 'string' ? mcp.resolveTool(obj.name) : undefined
+      const entry = typeof name === 'string' ? mcp.resolveTool(name) : undefined
       if (!entry) continue
-      const rawArgs = obj.arguments ?? obj.parameters ?? {}
+      const rawArgs = obj.arguments ?? obj.parameters ?? inner?.arguments ?? inner?.parameters ?? {}
       const args = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs)
       if (!calls.some((c) => c.name === entry.fullName && c.args === args)) {
         calls.push({ id: `textcall_${Date.now()}_${calls.length}`, name: entry.fullName, args })
@@ -138,6 +390,11 @@ export interface PermissionRequest {
   explanation: string
 }
 
+export interface ChatRunResult {
+  ok: boolean
+  text: string
+}
+
 export async function runChat(options: {
   provider: ProviderConfig
   systemPrompt: string
@@ -146,19 +403,35 @@ export async function runChat(options: {
   emit: (event: StreamEvent) => void
   requestPermission: (request: PermissionRequest) => Promise<'allow' | 'deny'>
   signal: AbortSignal
-}): Promise<void> {
+  /** No modo propor o modelo não deve ser cobrado a gravar arquivo. */
+  allowFileWrites?: boolean
+  /** Etapas intermediárias de uma equipe não escrevem no chat; só devolvem o texto. */
+  emitTokens?: boolean
+  /** A última etapa emite done. As anteriores deixam a equipe decidir quando encerrar. */
+  emitDone?: boolean
+}): Promise<ChatRunResult> {
   const { provider, systemPrompt, history, mcp, emit, requestPermission, signal } = options
+  const emitTokens = options.emitTokens !== false
+  const emitDone = options.emitDone !== false
+  const succeed = (text: string): ChatRunResult => {
+    if (emitDone) emit({ type: 'done' })
+    return { ok: true, text }
+  }
   const client = makeClient(provider)
   const tools = buildTools(mcp)
 
+  const folder = mcp.workspaceFolder()
+  const allowFileWrites = options.allowFileWrites !== false && !!folder
   const toolRules =
     tools.length > 0
-      ? '\n\nREGRA DE FERRAMENTAS: para usar uma ferramenta, use EXCLUSIVAMENTE o mecanismo nativo de tool calling. ' +
-        'NUNCA escreva o JSON da chamada como texto na resposta — isso não executa nada.'
+      ? '\n\nQuando o usuário pedir para criar ou alterar um arquivo, chame write_file com o path absoluto desse arquivo e o conteúdo real. ' +
+        'Se ele pedir para editar algo que já existe, use o mesmo path. Não invente outro arquivo. ' +
+        'Se ele só fizer uma pergunta, responda em texto e não chame ferramenta.'
       : ''
+  const fileContext = allowFileWrites && folder && tools.length > 0 ? currentFileBlock(folder, history) : ''
 
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt + toolRules },
+    { role: 'system', content: systemPrompt + toolRules + fileContext },
     ...history.map((m) => ({ role: m.role, content: m.content }) as ChatCompletionMessageParam)
   ]
 
@@ -195,7 +468,7 @@ export async function runChat(options: {
         if (!delta) continue
         if (delta.content) {
           assistantText += delta.content
-          emit({ type: 'token', text: delta.content })
+          if (emitTokens) emit({ type: 'token', text: delta.content })
         }
         for (const tc of delta.tool_calls ?? []) {
           const slot = (toolCalls[tc.index] ??= { id: '', name: '', args: '' })
@@ -207,16 +480,14 @@ export async function runChat(options: {
 
       // Sem ferramentas nesta rodada (a última): o texto gerado É a resposta final.
       if (!useTools) {
-        emit({ type: 'done' })
-        return
+        return succeed(assistantText)
       }
 
       if (toolCalls.length === 0) {
         // fallback: o modelo escreveu a chamada como texto em vez de usar tool calling
         const textual = assistantText ? extractTextualToolCalls(assistantText, mcp) : []
         if (textual.length === 0) {
-          emit({ type: 'done' })
-          return
+          return succeed(assistantText)
         }
         toolCalls.push(...textual)
       }
@@ -235,7 +506,21 @@ export async function runChat(options: {
         const entry = mcp.lookup(tc.name)
         const toolName = entry?.tool.name ?? tc.name
         const serverName = entry?.serverName ?? 'desconhecido'
-        const explanation = explainToolCall(serverName, toolName, entry?.tool.description, tc.args)
+        if (entry?.serverId === '__workspace' && folder) {
+          let parsed: Record<string, unknown> = {}
+          try {
+            parsed = tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {}
+          } catch {
+            parsed = {}
+          }
+          const repaired = repairWorkspaceArgs(toolName, parsed, folder, history, assistantText)
+          tc.args = JSON.stringify(repaired)
+        }
+        const shownDescription =
+          entry?.serverId === '__workspace'
+            ? WORKSPACE_DESCRIPTION[toolName]
+            : entry?.tool.description
+        const explanation = explainToolCall(serverName, toolName, shownDescription, tc.args)
 
         const decision = await requestPermission({
           callId: tc.id,
@@ -246,7 +531,7 @@ export async function runChat(options: {
         })
         if (signal.aborted) {
           emit({ type: 'done' })
-          return
+          return { ok: false, text: assistantText }
         }
 
         if (decision === 'deny') {
@@ -271,15 +556,49 @@ export async function runChat(options: {
 
         let resultText: string
         let ok = true
+        let finishChange: (() => FileChange[]) | null = null
         try {
           const args = tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {}
-          resultText = await mcp.callTool(tc.name, args)
+          const workspaceWrite =
+            entry?.serverId === '__workspace' && (toolName === 'write_file' || toolName === 'edit_file')
+          if (workspaceWrite && !allowFileWrites) {
+            throw new Error('Modo apenas propor: não grave arquivos. Mostre o código na resposta.')
+          }
+          if (toolName === 'write_file' && entry?.serverId === '__workspace') {
+            const problem = invalidWrite(args)
+            if (problem) throw new Error(problem)
+          }
+          finishChange = beginFileChange(
+            mcp.workspaceFolder(),
+            entry?.serverId === '__workspace',
+            toolName,
+            args
+          )
+          // edit_file roda aqui, e não no MCP: o servidor exige match exato e
+          // falha mesmo depois que o usuário autorizou a edição.
+          if (toolName === 'edit_file' && entry?.serverId === '__workspace') {
+            if (!folder) throw new Error('Nenhuma pasta de trabalho definida para editar o arquivo.')
+            resultText = applyWorkspaceEdit(folder, args)
+          } else {
+            resultText = await mcp.callTool(tc.name, args)
+          }
         } catch (err) {
           ok = false
+          finishChange = null
           resultText = err instanceof Error ? err.message : String(err)
         }
 
-        emit({ type: 'tool-end', callId: tc.id, ok, summary: summarizeToolResult(ok, resultText) })
+        if (ok && finishChange) {
+          for (const change of finishChange()) emit({ type: 'file-change', change })
+        }
+
+        const summary =
+          ok && toolName === 'edit_file'
+            ? 'Pronto — o trecho foi alterado no arquivo.'
+            : ok && toolName === 'write_file'
+              ? 'Pronto — o arquivo foi gravado.'
+              : summarizeToolResult(ok, resultText)
+        emit({ type: 'tool-end', callId: tc.id, ok, summary })
 
         // Uma falha NÃO aborta a geração: devolvemos o erro ao modelo para que ele
         // se corrija (caminho errado, arquivo inexistente…). Só depois de insistir
@@ -290,13 +609,19 @@ export async function runChat(options: {
         } else {
           const failures = (toolFailures.get(tc.name) ?? 0) + 1
           toolFailures.set(tc.name, failures)
+          const editHint =
+            toolName === 'edit_file'
+              ? ' Leia o arquivo com read_text_file e copie o trecho, ou use write_file com o conteúdo completo.'
+              : ''
           guidance =
             failures >= MAX_TOOL_FAILURES
               ? `\nATENÇÃO: “${toolName}” já falhou ${failures} vezes seguidas. NÃO a chame de novo ` +
                 'com os mesmos argumentos. Liste o diretório para confirmar o caminho/nome exato, ' +
-                'use outra ferramenta, ou explique o problema ao usuário e pergunte como prosseguir.'
+                'use outra ferramenta, ou explique o problema ao usuário e pergunte como prosseguir.' +
+                editHint
               : '\nDica: confira os argumentos (use caminho absoluto e o nome exato do arquivo); ' +
-                'se não tiver certeza do nome, liste o diretório antes de tentar de novo.'
+                'se não tiver certeza do nome, liste o diretório antes de tentar de novo.' +
+                editHint
         }
 
         messages.push({
@@ -309,12 +634,12 @@ export async function runChat(options: {
 
     // Rede de segurança: a última rodada já roda sem ferramentas e retorna com
     // "done", então normalmente não chegamos aqui.
-    emit({ type: 'done' })
+    return succeed('')
   } catch (err) {
     // parada pedida pelo usuário (botão Parar) ou pela suspensão do computador
     if (signal.aborted) {
       emit({ type: 'done' })
-      return
+      return { ok: false, text: '' }
     }
     // silêncio prolongado do streaming: conexão morta (ex.: o computador dormiu)
     if (idleAbort?.signal.aborted) {
@@ -324,9 +649,10 @@ export async function runChat(options: {
           'A resposta parou de chegar — o modelo pode estar sobrecarregado/muito lento, ou o ' +
           'computador suspendeu. Clique em Continuar para tentar de novo.'
       })
-      return
+      return { ok: false, text: '' }
     }
     emit({ type: 'error', message: friendlyError(err, provider) })
+    return { ok: false, text: '' }
   }
 }
 
