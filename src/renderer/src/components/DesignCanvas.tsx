@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type PointerEvent } from 'react'
 import type { DesignElement, DesignFrame, DesignKind } from '../../../shared/design'
 import { DESIGN_SIZE } from '../../../shared/design'
 
@@ -65,6 +65,85 @@ export function paintFrame(ctx: CanvasRenderingContext2D, frame: DesignFrame, ti
   ctx.fillStyle = frame.background
   ctx.fillRect(0, 0, frame.width, frame.height)
   for (const element of frame.elements) paintElement(ctx, element, time)
+}
+
+function jpegPage(frame: DesignFrame): { width: number; height: number; bytes: Uint8Array } | null {
+  const canvas = document.createElement('canvas')
+  canvas.width = frame.width
+  canvas.height = frame.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  paintFrame(ctx, frame, 0)
+  const url = canvas.toDataURL('image/jpeg', 0.82)
+  const raw = atob(url.slice(url.indexOf(',') + 1))
+  const bytes = new Uint8Array(raw.length)
+  for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index)
+  return { width: frame.width, height: frame.height, bytes }
+}
+
+function buildPdf(pages: { width: number; height: number; bytes: Uint8Array }[]): Uint8Array {
+  const chunks: Uint8Array[] = []
+  const offsets: number[] = []
+  let length = 0
+  const push = (data: Uint8Array | string): void => {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
+    chunks.push(bytes)
+    length += bytes.length
+  }
+  push('%PDF-1.3\n')
+  const pageIds = pages.map((_, index) => 3 + index * 3)
+  offsets.push(length)
+  push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n')
+  offsets.push(length)
+  push(
+    `2 0 obj\n<< /Type /Pages /Count ${pages.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] >>\nendobj\n`
+  )
+  pages.forEach((page, index) => {
+    const pageId = 3 + index * 3
+    const contentId = pageId + 1
+    const imageId = pageId + 2
+    const content = `q\n${page.width} 0 0 ${page.height} 0 0 cm\n/Im0 Do\nQ\n`
+    offsets.push(length)
+    push(
+      `${pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}] /Resources << /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>\nendobj\n`
+    )
+    offsets.push(length)
+    push(`${contentId} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj\n`)
+    offsets.push(length)
+    push(
+      `${imageId} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.bytes.length} >>\nstream\n`
+    )
+    push(page.bytes)
+    push('\nendstream\nendobj\n')
+  })
+  const xref = length
+  const count = 2 + pages.length * 3
+  let xrefBody = `xref\n0 ${count + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) xrefBody += `${String(offset).padStart(10, '0')} 00000 n \n`
+  push(xrefBody)
+  push(`trailer\n<< /Size ${count + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`)
+  const out = new Uint8Array(length)
+  let at = 0
+  for (const chunk of chunks) {
+    out.set(chunk, at)
+    at += chunk.length
+  }
+  return out
+}
+
+export function downloadPdf(frames: DesignFrame[], title: string): void {
+  const pages = frames.flatMap((frame) => {
+    const page = jpegPage(frame)
+    return page ? [page] : []
+  })
+  if (pages.length === 0) return
+  const pdf = buildPdf(pages)
+  const blob = new Blob([pdf.buffer as ArrayBuffer], { type: 'application/pdf' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = `${title || 'design'}.pdf`
+  link.click()
+  URL.revokeObjectURL(link.href)
 }
 
 export function downloadFrame(frame: DesignFrame, title: string): void {
@@ -200,13 +279,24 @@ export function sampleFrame(kind: DesignKind): DesignFrame {
 
 export function DesignCanvas({
   frame,
-  animate = false
+  animate = false,
+  onMove
 }: {
   frame: DesignFrame
   animate?: boolean
+  onMove?: (index: number, x: number, y: number) => void
 }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{
+    index: number
+    x: number
+    y: number
+    grabX: number
+    grabY: number
+    pointerId: number
+  } | null>(null)
+  const drawRef = useRef<(time: number) => void>(() => {})
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -215,19 +305,31 @@ export function DesignCanvas({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     let frameId = 0
+    const painted = (): DesignFrame => {
+      const drag = dragRef.current
+      if (!drag) return frame
+      return {
+        ...frame,
+        elements: frame.elements.map((element, index) =>
+          index === drag.index ? { ...element, x: drag.x, y: drag.y } : element
+        )
+      }
+    }
     const draw = (time: number): void => {
+      const current = painted()
       const bounds = host.getBoundingClientRect()
       const dpr = window.devicePixelRatio || 1
-      const scale = Math.min(bounds.width / frame.width, bounds.height / frame.height)
+      const scale = Math.min(bounds.width / current.width, bounds.height / current.height)
       const safe = Number.isFinite(scale) && scale > 0 ? scale : 1
-      canvas.width = Math.max(1, Math.floor(frame.width * safe * dpr))
-      canvas.height = Math.max(1, Math.floor(frame.height * safe * dpr))
-      canvas.style.width = `${Math.floor(frame.width * safe)}px`
-      canvas.style.height = `${Math.floor(frame.height * safe)}px`
+      canvas.width = Math.max(1, Math.floor(current.width * safe * dpr))
+      canvas.height = Math.max(1, Math.floor(current.height * safe * dpr))
+      canvas.style.width = `${Math.floor(current.width * safe)}px`
+      canvas.style.height = `${Math.floor(current.height * safe)}px`
       ctx.setTransform(dpr * safe, 0, 0, dpr * safe, 0, 0)
-      paintFrame(ctx, frame, time)
+      paintFrame(ctx, current, time)
       if (animate) frameId = window.requestAnimationFrame(draw)
     }
+    drawRef.current = draw
     frameId = window.requestAnimationFrame(draw)
     const observer = new ResizeObserver(() => {
       if (!animate) draw(0)
@@ -239,9 +341,69 @@ export function DesignCanvas({
     }
   }, [frame, animate])
 
+  const pointOf = (event: PointerEvent<HTMLCanvasElement>): { x: number; y: number } | null => {
+    const canvas = canvasRef.current
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * frame.width,
+      y: ((event.clientY - rect.top) / rect.height) * frame.height
+    }
+  }
+
+  const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
+    if (!onMove) return
+    const point = pointOf(event)
+    if (!point) return
+    for (let index = frame.elements.length - 1; index >= 0; index--) {
+      const element = frame.elements[index]
+      const inside =
+        point.x >= element.x &&
+        point.x <= element.x + Math.max(element.w, 8) &&
+        point.y >= element.y &&
+        point.y <= element.y + Math.max(element.h, 8)
+      if (!inside) continue
+      dragRef.current = {
+        index,
+        x: element.x,
+        y: element.y,
+        grabX: point.x - element.x,
+        grabY: point.y - element.y,
+        pointerId: event.pointerId
+      }
+      event.currentTarget.setPointerCapture(event.pointerId)
+      return
+    }
+  }
+
+  const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const point = pointOf(event)
+    if (!point) return
+    drag.x = Math.round(point.x - drag.grabX)
+    drag.y = Math.round(point.y - drag.grabY)
+    if (!animate) drawRef.current(0)
+  }
+
+  const endDrag = (event: PointerEvent<HTMLCanvasElement>): void => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    dragRef.current = null
+    onMove?.(drag.index, drag.x, drag.y)
+  }
+
   return (
     <div className="design-canvas-host" ref={hostRef}>
-      <canvas ref={canvasRef} className="design-canvas" />
+      <canvas
+        ref={canvasRef}
+        className={onMove ? 'design-canvas editable' : 'design-canvas'}
+        onPointerDown={onMove ? onPointerDown : undefined}
+        onPointerMove={onMove ? onPointerMove : undefined}
+        onPointerUp={onMove ? endDrag : undefined}
+        onPointerCancel={onMove ? endDrag : undefined}
+      />
     </div>
   )
 }

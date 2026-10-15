@@ -7,6 +7,10 @@ import type {
   ChatMessage,
   PickedAttachment,
   FileChange,
+  OpenCodeFileDiff,
+  OpenCodeModel,
+  OpenCodeNotice,
+  OpenCodePermission,
   McpServerStatus,
   RemoteChatStub,
   SlashCommand
@@ -25,7 +29,8 @@ import { DesignPanel, type DesignDoc } from './components/DesignPanel'
 import { LoginScreen } from './components/LoginScreen'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SlashMenu, filterSlashCommands, slashQuery } from './components/SlashMenu'
-import { Workbench, type WorkbenchTab } from './components/Workbench'
+import { Workbench, type CommandRun, type ReviewHunk, type WorkbenchTab } from './components/Workbench'
+import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
   FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight
@@ -107,7 +112,7 @@ function shrinkImage(dataUrl: string): Promise<string> {
   })
 }
 
-export type ConversationKind = 'chat' | 'dev'
+export type ConversationKind = 'chat' | 'dev' | 'opencode'
 
 export interface Conversation {
   id: string
@@ -115,8 +120,12 @@ export interface Conversation {
   messages: UiMessage[]
   updatedAt: number
   folder?: string
-  /** 'chat' = conversa simples (sem pasta); 'dev' = com pasta de trabalho e ferramentas de arquivo. */
+  /** 'chat' = conversa simples; 'dev' = pasta e ferramentas daqui; 'opencode' = agente do OpenCode. */
   kind?: ConversationKind
+  /** Sessão criada no servidor OpenCode para esta conversa. */
+  opencodeSessionId?: string
+  /** Modelo do OpenCode usado nesta conversa. */
+  opencodeModel?: OpenCodeModel
   /** Equipe usada nesta conversa. Ausente = só o modelo ativo. */
   teamId?: string | null
   /** id da conversa correspondente no Open WebUI, quando sincronizada */
@@ -134,6 +143,10 @@ export interface ConversationUsage {
   contextTokens: number | null
   /** Soma das respostas geradas nesta conversa. */
   generatedTokens: number
+}
+
+function openCodeModelKey(model: OpenCodeModel): string {
+  return `${model.providerID}\u001f${model.id}`
 }
 
 function formatTokens(value: number): string {
@@ -318,6 +331,26 @@ export default function App(): JSX.Element {
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes')
   const [fileChanges, setFileChanges] = useState<Record<string, FileChange[]>>({})
+  const [commandRuns, setCommandRuns] = useState<Record<string, CommandRun[]>>({})
+  const [ocView, setOcView] = useState<OpenCodeView>('session')
+  const [ocOnline, setOcOnline] = useState(false)
+  const [ocStatus, setOcStatus] = useState('')
+  const [ocDiffs, setOcDiffs] = useState<Record<string, OpenCodeFileDiff[]>>({})
+  const [ocPerms, setOcPerms] = useState<Record<string, OpenCodePermission[]>>({})
+  const [ocShell, setOcShell] = useState<Record<string, OpenCodeShellRun[]>>({})
+  const [ocIntroDone, setOcIntroDone] = useState(() => {
+    try {
+      return localStorage.getItem('osvacode.opencode.ready') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [ocModels, setOcModels] = useState<OpenCodeModel[]>([])
+  const [ocDefaultModel, setOcDefaultModel] = useState<OpenCodeModel | null>(null)
+  const [ocPreferredModel, setOcPreferredModel] = useState<OpenCodeModel | null>(null)
+  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null)
+  const [tunnelBusy, setTunnelBusy] = useState(false)
+  const [tunnelMessage, setTunnelMessage] = useState('')
   const [artifacts, setArtifacts] = useState<Record<string, Artifact[]>>({})
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
   // aba ativa do menu: 'chat' (conversa simples) ou 'dev' (com pasta de trabalho)
@@ -426,6 +459,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     void window.api.getSettings().then(setSettings)
     void window.api.hookPort().then(setHookPort)
+    void window.api.tunnelStatus().then(setTunnelUrl)
     void window.api.getSession().then((s) => setSession(s))
     void window.api.getMcpStatus().then(setMcpStatus)
 
@@ -454,7 +488,205 @@ export default function App(): JSX.Element {
 
       recognitionRef.current = recognition
     }
+    return window.api.onTunnel((url) => {
+      setTunnelUrl(url)
+      setTunnelBusy(false)
+    })
   }, [])
+
+  function applyOpenCodeNotice(notice: OpenCodeNotice): void {
+    if (notice.type === 'status') {
+      setOcOnline(notice.online)
+      setOcStatus(notice.message)
+      return
+    }
+    if (notice.type === 'permission') {
+      setOcPerms((prev) => {
+        const list = prev[notice.request.sessionID] ?? []
+        if (list.some((item) => item.id === notice.request.id)) return prev
+        return { ...prev, [notice.request.sessionID]: [...list, notice.request] }
+      })
+      setConversations((prev) =>
+        prev.map((conversation) => {
+          if (conversation.opencodeSessionId !== notice.request.sessionID) return conversation
+          if (conversation.messages.some((item) => item.kind === 'tool' && item.permissionId === notice.request.id)) {
+            return conversation
+          }
+          return {
+            ...conversation,
+            updatedAt: Date.now(),
+            messages: [
+              ...conversation.messages,
+              {
+                kind: 'tool',
+                id: notice.request.id,
+                callId: notice.request.id,
+                toolName: notice.request.permission,
+                serverName: 'OpenCode',
+                explanation: notice.request.patterns.join('\n') || 'O OpenCode precisa da sua autorização.',
+                status: 'awaiting',
+                permissionId: notice.request.id
+              }
+            ]
+          }
+        })
+      )
+      return
+    }
+    if (notice.type === 'permission-cleared') {
+      setOcPerms((prev) => ({
+        ...prev,
+        [notice.sessionID]: (prev[notice.sessionID] ?? []).filter((item) => item.id !== notice.requestID)
+      }))
+      return
+    }
+    if (notice.type === 'diff') {
+      setOcDiffs((prev) => ({ ...prev, [notice.sessionID]: notice.files }))
+      return
+    }
+    if (notice.type === 'shell') {
+      setOcShell((prev) => {
+        const list = prev[notice.sessionID] ?? []
+        const existing = list.some((item) => item.callID === notice.callID)
+        const next = existing
+          ? list.map((item) =>
+              item.callID === notice.callID
+                ? {
+                    ...item,
+                    command: notice.command || item.command,
+                    output: notice.done ? notice.output : item.output,
+                    done: notice.done
+                  }
+                : item
+            )
+          : [...list, { callID: notice.callID, command: notice.command, output: notice.output, done: notice.done }]
+        return { ...prev, [notice.sessionID]: next.slice(-20) }
+      })
+      return
+    }
+    if (notice.type === 'usage') {
+      setConversations((prev) =>
+        prev.map((conversation) => {
+          if (conversation.opencodeSessionId !== notice.sessionID) return conversation
+          return {
+            ...conversation,
+            usage: {
+              promptTokens: notice.input,
+              completionTokens: notice.output,
+              totalTokens: notice.input + notice.output,
+              contextTokens: conversation.usage?.contextTokens ?? null,
+              generatedTokens: (conversation.usage?.generatedTokens ?? 0) + notice.output
+            }
+          }
+        })
+      )
+      return
+    }
+    if (notice.type === 'busy') {
+      const match = conversationsRef.current.find((item) => item.opencodeSessionId === notice.sessionID)
+      if (match) {
+        generatingConversation.current = match.id
+        setBusy(true)
+      }
+    }
+    if (notice.type === 'idle' || notice.type === 'error') {
+      const match = conversationsRef.current.find((item) => item.opencodeSessionId === notice.sessionID)
+      if (match && generatingConversation.current === match.id) {
+        generatingConversation.current = null
+        setBusy(false)
+      }
+      if (notice.type === 'idle') {
+        void window.api.opencodeDiff(notice.sessionID).then(
+          (files) => setOcDiffs((prev) => ({ ...prev, [notice.sessionID]: files })),
+          () => undefined
+        )
+      }
+    }
+    setConversations((prev) =>
+      prev.map((conversation) => {
+        if (!notice.sessionID || conversation.opencodeSessionId !== notice.sessionID) return conversation
+        const messages = [...conversation.messages]
+        if (notice.type === 'text-delta') {
+          const last = messages[messages.length - 1]
+          if (last?.kind === 'assistant' && last.streaming) {
+            messages[messages.length - 1] = { ...last, content: last.content + notice.delta }
+          } else {
+            messages.push({ kind: 'assistant', id: crypto.randomUUID(), content: notice.delta, streaming: true })
+          }
+        } else if (notice.type === 'text-ended') {
+          const last = messages[messages.length - 1]
+          if (last?.kind === 'assistant' && last.streaming) {
+            messages[messages.length - 1] = { ...last, content: notice.text || last.content, streaming: false }
+          }
+        } else if (notice.type === 'tool' && notice.state === 'start') {
+          messages.push({
+            kind: 'tool',
+            id: notice.callID,
+            callId: notice.callID,
+            toolName: notice.name,
+            serverName: 'OpenCode',
+            explanation: notice.name,
+            status: 'running'
+          })
+        } else if (notice.type === 'tool') {
+          const index = messages.findIndex((item) => item.kind === 'tool' && item.callId === notice.callID)
+          const current = messages[index]
+          if (current?.kind === 'tool') {
+            messages[index] = {
+              ...current,
+              status: notice.state === 'ok' ? 'ok' : 'error',
+              summary: notice.detail.slice(0, 400)
+            }
+          }
+        } else if (notice.type === 'error') {
+          const last = messages[messages.length - 1]
+          if (last?.kind === 'assistant' && last.streaming) messages[messages.length - 1] = { ...last, streaming: false }
+          messages.push({ kind: 'error', id: crypto.randomUUID(), content: notice.message })
+        } else if (notice.type === 'idle') {
+          const last = messages[messages.length - 1]
+          if (last?.kind === 'assistant' && last.streaming) messages[messages.length - 1] = { ...last, streaming: false }
+        }
+        return { ...conversation, messages, updatedAt: Date.now() }
+      })
+    )
+  }
+
+  useEffect(() => {
+    void window.api.opencodeStatus().then((status) => {
+      setOcOnline(status.online)
+      setOcStatus(status.message)
+    })
+    return window.api.onOpenCode(applyOpenCodeNotice)
+  }, [])
+
+  useEffect(() => {
+    if (tab !== 'opencode') return
+    let cancelled = false
+    void window.api.opencodeModels().then(
+      (result) => {
+        if (cancelled) return
+        setOcModels(result.models)
+        setOcDefaultModel(result.defaultModel)
+        setOcPreferredModel((current) => current ?? result.defaultModel)
+        if (result.models.length > 0) {
+          try {
+            localStorage.setItem('osvacode.opencode.ready', '1')
+          } catch {
+            // a introdução volta na próxima abertura
+          }
+          setOcIntroDone(true)
+        }
+      },
+      (err: unknown) => {
+        if (cancelled) return
+        setOcModels([])
+        setOcStatus(err instanceof Error ? err.message : String(err))
+      }
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [tab, ocOnline])
 
   // carrega as conversas do usuário logado (e busca as remotas dele)
   useEffect(() => {
@@ -660,6 +892,24 @@ export default function App(): JSX.Element {
         return
       }
 
+      if (event.type === 'command-output') {
+        setCommandRuns((prev) => {
+          const current = prev[conversationId] ?? []
+          return {
+            ...prev,
+            [conversationId]: [
+              ...current,
+              { command: event.command, output: event.output, ok: event.ok, at: Date.now() }
+            ].slice(-20)
+          }
+        })
+        if (conversationId === activeIdRef.current) {
+          setWorkbenchOpen(true)
+          setWorkbenchTab('terminal')
+        }
+        return
+      }
+
       if (event.type === 'file-change') {
         setFileChanges((prev) => {
           const current = prev[conversationId] ?? []
@@ -783,6 +1033,16 @@ export default function App(): JSX.Element {
           setBusy(false)
         }
         if (event.type === 'done') {
+          if (conversationId !== activeIdRef.current && typeof Notification !== 'undefined') {
+            const title = conversationsRef.current.find((item) => item.id === conversationId)?.title
+            if (title) {
+              try {
+                new Notification('OsvaCode', { body: `${title} terminou.` })
+              } catch {
+                // o sistema pode recusar o aviso; a conversa continua na lista
+              }
+            }
+          }
           autoResumeCount.current = 0 // sucesso: zera as tentativas automáticas
           // adia para o estado da conversa terminar de atualizar antes de enviar
           setTimeout(() => pushToOwui(conversationId), 150)
@@ -847,7 +1107,7 @@ export default function App(): JSX.Element {
     if ((!baseText && attachments.length === 0) || busy) return
     // Sem conversa aberta, o Chat cria uma na hora. DevMode ainda pede pasta.
     if (!active && tab !== 'chat') return
-    if (active && conversationKind(active) === 'dev' && !active.folder) return
+    if (active && conversationKind(active) !== 'chat' && !active.folder) return
 
     setBusy(true)
     autoResumeCount.current = 0 // nova mensagem: reinicia o ciclo de retomada automática
@@ -875,8 +1135,8 @@ export default function App(): JSX.Element {
     const folder = active?.folder
     const teamId = active?.teamId
 
-    setConversations((prev) => {
-      const existing = prev.find((c) => c.id === conversationId)
+    const nextConversations = (() => {
+      const existing = conversationsRef.current.find((c) => c.id === conversationId)
       if (!existing) {
         return [
           {
@@ -885,12 +1145,12 @@ export default function App(): JSX.Element {
             autoTitle: false,
             messages: [userMessage],
             updatedAt: Date.now(),
-            kind: 'chat'
+            kind: 'chat' as const
           },
-          ...prev
+          ...conversationsRef.current
         ]
       }
-      return prev.map((c) => {
+      return conversationsRef.current.map((c) => {
         if (c.id !== conversationId) return c
         return {
           ...c,
@@ -900,20 +1160,56 @@ export default function App(): JSX.Element {
           updatedAt: Date.now()
         }
       })
-    })
+    })()
+    conversationsRef.current = nextConversations
+    setConversations(nextConversations)
     if (!active) setActiveId(conversationId)
-
-    const history = toChatMessages([...priorMessages, userMessage])
 
     setInput('')
     setAttachments([])
+
+    const sent = nextConversations.find((item) => item.id === conversationId)
+    if (sent && conversationKind(sent) === 'opencode' && sent.folder) {
+      const directory = sent.folder
+      const title = sent.title
+      generatingConversation.current = conversationId
+      void window.api
+        .opencodeEnsure({
+          sessionID: sent.opencodeSessionId ?? null,
+          directory,
+          title,
+          model: sent.opencodeModel ?? ocPreferredModel ?? ocDefaultModel
+        })
+        .then(async (ensured) => {
+          const stored = conversationsRef.current.map((item) =>
+            item.id === conversationId ? { ...item, opencodeSessionId: ensured.sessionID } : item
+          )
+          conversationsRef.current = stored
+          setConversations(stored)
+          await window.api.opencodePrompt(ensured.sessionID, fullText)
+        })
+        .catch((err: unknown) => {
+          if (generatingConversation.current === conversationId) {
+            generatingConversation.current = null
+            setBusy(false)
+          }
+          const message = err instanceof Error ? err.message : String(err)
+          patchConversation(conversationId, (messages) => [
+            ...messages,
+            { kind: 'error', id: crypto.randomUUID(), content: message }
+          ])
+        })
+      return
+    }
+
+    const history = toChatMessages([...priorMessages, userMessage])
 
     const requestId = crypto.randomUUID()
     chatRequestId.current = requestId
     chatTargets.current.set(requestId, conversationId)
     generatingConversation.current = conversationId
     void window.api.sendChat(requestId, history, { folder, mode, teamId })
-  }, [input, busy, active, attachments, mode, tab])
+  }, [input, busy, active, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel])
 
   const toggleRecording = useCallback(() => {
     if (!recognitionRef.current) {
@@ -935,12 +1231,18 @@ export default function App(): JSX.Element {
   }, [isRecording])
 
   const stop = useCallback(() => {
+    const current = conversationsRef.current.find((item) => item.id === generatingConversation.current)
+    if (current && conversationKind(current) === 'opencode' && current.opencodeSessionId) {
+      void window.api.opencodeInterrupt(current.opencodeSessionId)
+      return
+    }
     if (chatRequestId.current) void window.api.abort(chatRequestId.current)
   }, [])
 
   /** Reenvia a conversa a partir da última mensagem do usuário, descartando erros. */
   const retry = useCallback(() => {
     if (!active || busy) return
+    if (conversationKind(active) === 'opencode') return
     if (conversationKind(active) === 'dev' && !active.folder) return
     const kinds = active.messages.map((m) => m.kind)
     const lastUserIdx = kinds.lastIndexOf('user')
@@ -966,8 +1268,29 @@ export default function App(): JSX.Element {
   }, [retry, activeId])
 
   const respondPermission = useCallback((permissionId: string, decision: Parameters<typeof window.api.respondPermission>[1]) => {
+    const conversation = conversationsRef.current.find((item) =>
+      item.messages.some((message) => message.kind === 'tool' && message.permissionId === permissionId)
+    )
+    if (conversation && conversationKind(conversation) === 'opencode' && conversation.opencodeSessionId) {
+      const reply = decision === 'allow' ? 'once' : decision === 'allow-always' ? 'always' : 'reject'
+      const sessionID = conversation.opencodeSessionId
+      void window.api.opencodePermission(sessionID, permissionId, reply).then(() => {
+        setOcPerms((prev) => ({
+          ...prev,
+          [sessionID]: (prev[sessionID] ?? []).filter((item) => item.id !== permissionId)
+        }))
+        patchConversation(conversation.id, (messages) =>
+          messages.map((message) =>
+            message.kind === 'tool' && message.permissionId === permissionId
+              ? { ...message, status: decision === 'deny' ? 'denied' : 'ok' }
+              : message
+          )
+        )
+      })
+      return
+    }
     void window.api.respondPermission(permissionId, decision)
-  }, [])
+  }, [patchConversation])
 
   const simplify = useCallback(
     (messageId: string, content: string) => {
@@ -991,6 +1314,7 @@ export default function App(): JSX.Element {
 
   const createConversation = useCallback((kind: ConversationKind, folder: string | null) => {
     const id = crypto.randomUUID()
+    const model = kind === 'opencode' ? (ocPreferredModel ?? ocDefaultModel) : null
     setConversations((prev) => [
       {
         id,
@@ -999,20 +1323,21 @@ export default function App(): JSX.Element {
         messages: [],
         updatedAt: Date.now(),
         kind,
-        ...(folder ? { folder } : {})
+        ...(folder ? { folder } : {}),
+        ...(model ? { opencodeModel: model } : {})
       },
       ...prev
     ])
     setActiveId(id)
-  }, [])
+  }, [ocPreferredModel, ocDefaultModel])
 
   // Nova conversa: no DevMode a pasta é o contexto (e o grupo); no Chat cria na hora.
   // O título sai da primeira mensagem, sem pedir um nome.
   const startNewConversation = useCallback(async () => {
-    if (tab === 'dev') {
+    if (tab === 'dev' || tab === 'opencode') {
       const picked = await window.api.pickFolder()
       if (!picked) return
-      createConversation('dev', folderKey(picked))
+      createConversation(tab, folderKey(picked))
       return
     }
     createConversation('chat', null)
@@ -1271,6 +1596,23 @@ export default function App(): JSX.Element {
     if (!busy) drainHooks()
   }, [busy, drainHooks])
 
+  const chooseOpenCodeModel = useCallback(
+    (value: string) => {
+      const model = ocModels.find((item) => openCodeModelKey(item) === value)
+      if (!model) return
+      setOcPreferredModel(model)
+      if (!active || conversationKind(active) !== 'opencode') return
+      setConversations((prev) =>
+        prev.map((item) => (item.id === active.id ? { ...item, opencodeModel: model } : item))
+      )
+      if (!active.opencodeSessionId) return
+      void window.api.opencodeUseModel(active.opencodeSessionId, model).catch((err: unknown) => {
+        setOcStatus(err instanceof Error ? err.message : String(err))
+      })
+    },
+    [ocModels, active]
+  )
+
   const changeProvider = useCallback(
     (providerId: string) => {
       if (!settings) return
@@ -1282,6 +1624,13 @@ export default function App(): JSX.Element {
   )
 
   const activeProvider = settings?.providers.find((p) => p.id === settings.activeProviderId)
+  const openCodeModel =
+    (activeKind === 'opencode' ? active?.opencodeModel : null) ??
+    (tab === 'opencode' ? (ocPreferredModel ?? ocDefaultModel) : null)
+  const openCodeModelOptions =
+    openCodeModel && !ocModels.some((item) => openCodeModelKey(item) === openCodeModelKey(openCodeModel))
+      ? [openCodeModel, ...ocModels]
+      : ocModels
   const activeTeam = settings?.teams?.find((t) => t.id === active?.teamId) ?? null
   const messages = active?.messages ?? []
 
@@ -1358,6 +1707,13 @@ export default function App(): JSX.Element {
                 designsRef.current.map((item) => (item.id === id ? { ...item, title, updatedAt: Date.now() } : item))
               )
             }}
+            onPatch={(id, frames) => {
+              persistDesignsRef.current(
+                designsRef.current.map((item) =>
+                  item.id === id ? { ...item, frames, updatedAt: Date.now() } : item
+                )
+              )
+            }}
             onAsk={(id, prompt) => askDesign(id, prompt)}
             onPickFolder={(id) => {
               void window.api.pickFolder().then((folder) => {
@@ -1379,6 +1735,21 @@ export default function App(): JSX.Element {
             mcpStatus={mcpStatus}
             userName={session.user.name}
             hookPort={hookPort}
+            tunnelUrl={tunnelUrl}
+            tunnelBusy={tunnelBusy}
+            tunnelMessage={tunnelMessage}
+            onToggleTunnel={() => {
+              if (tunnelBusy) return
+              setTunnelBusy(true)
+              setTunnelMessage('')
+              const task = tunnelUrl
+                ? window.api.tunnelStop().then(() => null)
+                : window.api.tunnelStart().then((result) => {
+                    if (result.error) setTunnelMessage(result.error)
+                    return result.url
+                  })
+              void task.then((url) => setTunnelUrl(url)).finally(() => setTunnelBusy(false))
+            }}
             busy={busy}
             onSave={(automation) => {
               const next = {
@@ -1400,7 +1771,7 @@ export default function App(): JSX.Element {
           <div className="chat-header">
             <span className="chat-title">{active.title}</span>
             <div className="chat-header-actions">
-              {(settings?.teams?.length ?? 0) > 0 && (
+              {activeKind !== 'opencode' && (settings?.teams?.length ?? 0) > 0 && (
                 <label className="team-select">
                   Equipe
                   <select
@@ -1416,7 +1787,7 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               )}
-              {activeTeam && activeTeam.steps.length > 0 && (
+              {activeKind !== 'opencode' && activeTeam && activeTeam.steps.length > 0 && (
                 <span className="team-path" title="Ordem dos modelos nesta tarefa">
                   {activeTeam.steps.map((step, index) => {
                     const provider = settings?.providers.find((p) => p.id === step.providerId)
@@ -1441,7 +1812,7 @@ export default function App(): JSX.Element {
                 </span>
               </button>
             )}
-            {activeKind === 'dev' && (
+            {(activeKind === 'dev' || activeKind === 'opencode') && (
               <button
                 className="folder-chip"
                 title={active.folder ?? 'Definir a pasta em que esta conversa trabalha'}
@@ -1452,6 +1823,7 @@ export default function App(): JSX.Element {
                 </span>
               </button>
             )}
+            {activeKind !== 'opencode' && (
             <button
               className={`folder-chip ${workbenchOpen ? 'active' : ''}`}
               title="Alterações, artefatos e navegador"
@@ -1464,17 +1836,50 @@ export default function App(): JSX.Element {
                 )}
               </span>
             </button>
+            )}
             </div>
           </div>
         )}
         {section === 'chats' && (
         <>
         <div className="chat" ref={scrollRef}>
-          {messages.length === 0 && (
+          {activeKind === 'opencode' && (
+            <OpenCodeSections
+              view={ocView}
+              onView={setOcView}
+              online={ocOnline}
+              message={ocStatus}
+              diffCount={active?.opencodeSessionId ? (ocDiffs[active.opencodeSessionId]?.length ?? 0) : 0}
+              permissionCount={active?.opencodeSessionId ? (ocPerms[active.opencodeSessionId]?.length ?? 0) : 0}
+              shellCount={active?.opencodeSessionId ? (ocShell[active.opencodeSessionId]?.length ?? 0) : 0}
+            />
+          )}
+          {activeKind === 'opencode' && ocView !== 'session' ? (
+            <OpenCodePane
+              view={ocView}
+              files={active?.opencodeSessionId ? (ocDiffs[active.opencodeSessionId] ?? []) : []}
+              permissions={active?.opencodeSessionId ? (ocPerms[active.opencodeSessionId] ?? []) : []}
+              shell={active?.opencodeSessionId ? (ocShell[active.opencodeSessionId] ?? []) : []}
+              status={ocStatus}
+              onReply={(requestID, decision) => respondPermission(requestID, decision)}
+            />
+          ) : messages.length === 0 && (
             <div className="empty-state">
               <h1>Olá, {session.user.name.split(' ')[0] || 'você'}</h1>
               {active ? (
-                activeKind === 'dev' ? (
+                activeKind === 'opencode' ? (
+                  <>
+                    <p>
+                      Pasta <strong>{active.folder ? folderLabel(active.folder) : 'sem pasta'}</strong>.
+                      Esta conversa usa o agente do OpenCode
+                      {ocOnline ? '' : ', que ainda não respondeu neste computador'}.
+                    </p>
+                    <p className="hint">
+                      Sessão, alterações, permissões e terminal ficam nas seções desta conversa.
+                      {ocStatus ? ` ${ocStatus}` : ''}
+                    </p>
+                  </>
+                ) : activeKind === 'dev' ? (
                   <>
                     <p>
                       Pasta <strong>{active.folder ? folderLabel(active.folder) : 'sem pasta'}</strong>{' '}
@@ -1497,6 +1902,43 @@ export default function App(): JSX.Element {
                     </p>
                   </>
                 )
+              ) : tab === 'opencode' && !ocIntroDone ? (
+                <>
+                  <p>Para a lista de modelos aparecer, o OpenCode 2 precisa estar no ar neste computador.</p>
+                  <div className="opencode-setup">
+                    <ol>
+                      <li>
+                        Instale o OpenCode 2 e conecte um provedor com <code>/connect</code>. Sem um provedor, a lista
+                        fica vazia.
+                      </li>
+                      <li>
+                        Deixe o servidor rodando com <code>opencode serve</code>. O endereço padrão é{' '}
+                        <code>http://127.0.0.1:4096</code>.
+                      </li>
+                      <li>
+                        Se subir com <code>opencode pair</code>, a porta muda. Copie a URL que ele mostrar para
+                        Configurações → OpenCode.
+                      </li>
+                      <li>
+                        Se você definiu <code>OPENCODE_SERVER_PASSWORD</code>, coloque a mesma senha nessa tela.
+                      </li>
+                    </ol>
+                    <button type="button" onClick={() => setSettingsOpen(true)}>
+                      Abrir configurações
+                    </button>
+                  </div>
+                  {ocStatus && <p className="hint">{ocStatus}</p>}
+                </>
+              ) : tab === 'opencode' ? (
+                <>
+                  <p>
+                    Clique em <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Plus size={14} /> Nova conversa</strong> e
+                    escolha a pasta. O OpenCode conduz o agente, as alterações e o terminal dessa pasta.
+                  </p>
+                  <p className="hint">
+                    O seletor abaixo lista os modelos do servidor. O endereço fica em Configurações → OpenCode.
+                  </p>
+                </>
               ) : tab === 'chat' ? (
                 <>
                   <p>
@@ -1520,7 +1962,7 @@ export default function App(): JSX.Element {
               )}
             </div>
           )}
-          {messages.map((m) => {
+          {!(activeKind === 'opencode' && ocView !== 'session') && messages.map((m) => {
             switch (m.kind) {
               case 'tool':
                 return <ToolCallCard key={m.id} message={m} onRespond={respondPermission} />
@@ -1694,7 +2136,27 @@ export default function App(): JSX.Element {
             />
 
             <div className="composer-right">
-              {settings && settings.providers.length > 0 && (
+              {tab === 'opencode' ? (
+                <label
+                  className="composer-model"
+                  title={openCodeModel ? `${openCodeModel.name} · ${openCodeModel.providerID}` : 'Modelo do OpenCode'}
+                >
+                  <span>{openCodeModel?.name ?? (ocModels.length ? 'Modelo' : 'Sem modelos')}</span>
+                  <ChevronDown size={14} />
+                  <select
+                    value={openCodeModel ? openCodeModelKey(openCodeModel) : ''}
+                    onChange={(e) => chooseOpenCodeModel(e.target.value)}
+                    disabled={busy || openCodeModelOptions.length === 0}
+                  >
+                    {openCodeModelOptions.map((model) => (
+                      <option key={openCodeModelKey(model)} value={openCodeModelKey(model)}>
+                        {model.providerID} · {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                settings && settings.providers.length > 0 && (
                 <label className="composer-model" title={activeProvider ? `${activeProvider.name} · ${activeProvider.model}` : 'Modelo'}>
                   <span>{activeProvider?.name ?? 'Modelo'}</span>
                   <ChevronDown size={14} />
@@ -1710,6 +2172,7 @@ export default function App(): JSX.Element {
                     ))}
                   </select>
                 </label>
+                )
               )}
 
               {busy ? (
@@ -1773,14 +2236,22 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               )}
-              {activeKind !== 'dev' && <span className="composer-meta-quiet">Chat</span>}
+              {activeKind !== 'dev' && (
+                <span className="composer-meta-quiet">{tab === 'opencode' ? 'OpenCode' : 'Chat'}</span>
+              )}
             </div>
             <div className="composer-usage" ref={usageRef}>
               <UsageOrb
                 usage={active?.usage}
                 open={usageOpen}
-                modelName={activeProvider?.name ?? 'Modelo'}
-                modelId={activeProvider?.model ?? ''}
+                modelName={tab === 'opencode' ? (openCodeModel?.name ?? 'OpenCode') : (activeProvider?.name ?? 'Modelo')}
+                modelId={
+                  tab === 'opencode'
+                    ? openCodeModel
+                      ? `${openCodeModel.providerID}/${openCodeModel.id}`
+                      : ''
+                    : (activeProvider?.model ?? '')
+                }
                 onToggle={() => setUsageOpen((open) => !open)}
               />
             </div>
@@ -1789,7 +2260,7 @@ export default function App(): JSX.Element {
         </>
         )}
         </div>
-        {section === 'chats' && workbenchOpen && activeId && (
+        {section === 'chats' && workbenchOpen && activeId && activeKind !== 'opencode' && (
           <Workbench
             changes={fileChanges[activeId] ?? []}
             artifacts={artifacts[activeId] ?? []}
@@ -1803,6 +2274,43 @@ export default function App(): JSX.Element {
             onClearChanges={() =>
               setFileChanges((prev) => ({ ...prev, [activeId]: [] }))
             }
+            commands={commandRuns[activeId] ?? []}
+            onAcceptChange={(path) =>
+              setFileChanges((prev) => ({
+                ...prev,
+                [activeId]: (prev[activeId] ?? []).filter((item) => item.path !== path)
+              }))
+            }
+            onRevertChange={(change) => {
+              const folder = active?.folder
+              if (!folder || change.previous === undefined) return
+              void window.api.revertWorkspace(folder, change.path, change.previous).then((next) => {
+                setFileChanges((prev) => ({
+                  ...prev,
+                  [activeId]: next
+                    ? (prev[activeId] ?? []).map((item) => (item.path === change.path ? next : item))
+                    : (prev[activeId] ?? []).filter((item) => item.path !== change.path)
+                }))
+              })
+            }}
+            onRevertHunk={(change, hunk: ReviewHunk) => {
+              const folder = active?.folder
+              if (!folder || change.previous === undefined) return
+              void window.api
+                .revertHunk(folder, change.path, change.previous, {
+                  removed: hunk.removed,
+                  added: hunk.added,
+                  after: hunk.after
+                })
+                .then((next) => {
+                  setFileChanges((prev) => ({
+                    ...prev,
+                    [activeId]: next
+                      ? (prev[activeId] ?? []).map((item) => (item.path === change.path ? next : item))
+                      : (prev[activeId] ?? []).filter((item) => item.path !== change.path)
+                  }))
+                })
+            }}
           />
         )}
       </main>

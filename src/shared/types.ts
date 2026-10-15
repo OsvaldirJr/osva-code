@@ -26,6 +26,50 @@ export interface OpenWebUiConfig {
   enabled: boolean
 }
 
+/** Servidor local do OpenCode (`opencode serve`), usado pela aba OpenCode. */
+export interface OpenCodeConfig {
+  url: string
+  username: string
+  password: string
+}
+
+/** Modelo disponível no servidor OpenCode. */
+export interface OpenCodeModel {
+  id: string
+  providerID: string
+  name: string
+}
+
+export interface OpenCodeFileDiff {
+  file: string
+  patch: string
+  additions: number
+  deletions: number
+  status?: 'added' | 'deleted' | 'modified'
+}
+
+export interface OpenCodePermission {
+  id: string
+  sessionID: string
+  permission: string
+  patterns: string[]
+}
+
+/** Eventos já traduzidos do fluxo do OpenCode para a interface. */
+export type OpenCodeNotice =
+  | { type: 'status'; online: boolean; message: string }
+  | { type: 'text-delta'; sessionID: string; delta: string }
+  | { type: 'text-ended'; sessionID: string; text: string }
+  | { type: 'tool'; sessionID: string; callID: string; name: string; state: 'start' | 'ok' | 'fail'; detail: string }
+  | { type: 'shell'; sessionID: string; callID: string; command: string; output: string; done: boolean }
+  | { type: 'permission'; request: OpenCodePermission }
+  | { type: 'permission-cleared'; sessionID: string; requestID: string }
+  | { type: 'diff'; sessionID: string; files: OpenCodeFileDiff[] }
+  | { type: 'idle'; sessionID: string }
+  | { type: 'busy'; sessionID: string }
+  | { type: 'usage'; sessionID: string; input: number; output: number }
+  | { type: 'error'; sessionID: string; message: string }
+
 /** Uma etapa de uma equipe: qual modelo entra e o que ele faz. */
 export interface AgentStep {
   id: string
@@ -70,6 +114,8 @@ export interface AppSettings {
   teams: AgentTeam[]
   /** Tarefas salvas que o usuário dispara de novo pelo menu Automatização. */
   automations: Automation[]
+  /** Conexão com o servidor OpenCode desta máquina. */
+  opencode: OpenCodeConfig
 }
 
 export type AutomationSchedule = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly'
@@ -250,6 +296,8 @@ export type StreamEvent =
   | { type: 'file-change'; change: FileChange }
   /** Desenho pronto para o canvas da área Design. */
   | { type: 'design-update'; design: import('./design').DesignSnapshot }
+  /** Saída de um comando rodado na pasta de trabalho. */
+  | { type: 'command-output'; command: string; output: string; ok: boolean }
   /** Geração interrompida por algo externo (computador dormiu, conexão caiu): é retomável. */
   | { type: 'interrupted'; message: string }
 
@@ -268,6 +316,8 @@ export interface FileChange {
   lines: DiffLine[]
   /** Conteúdo final, só para HTML, SVG e Markdown, para pré-visualizar. */
   preview?: string
+  /** Texto anterior. null se o arquivo foi criado. Ausente se a reversão não cabe na memória. */
+  previous?: string | null
 }
 
 /** Retângulo do navegador embutido, em pixels CSS da janela. */

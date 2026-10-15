@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AutomationHookEvent, BrowserState, ChatEventPayload } from '../shared/types'
+import type { AutomationHookEvent, BrowserState, ChatEventPayload, OpenCodeNotice } from '../shared/types'
 import type { OsvaCodeApi } from '../shared/api'
 
 const api: OsvaCodeApi = {
@@ -53,6 +53,17 @@ const api: OsvaCodeApi = {
     ipcRenderer.on('automation:hook', listener)
     return () => ipcRenderer.removeListener('automation:hook', listener)
   },
+  tunnelStatus: () => ipcRenderer.invoke('hooks:tunnel-status'),
+  tunnelStart: () => ipcRenderer.invoke('hooks:tunnel-start'),
+  tunnelStop: () => ipcRenderer.invoke('hooks:tunnel-stop'),
+  onTunnel: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, url: string | null): void => callback(url)
+    ipcRenderer.on('automation:tunnel', listener)
+    return () => ipcRenderer.removeListener('automation:tunnel', listener)
+  },
+  revertWorkspace: (folder, path, previous) => ipcRenderer.invoke('workspace:revert', folder, path, previous),
+  revertHunk: (folder, path, previous, hunk) =>
+    ipcRenderer.invoke('workspace:revert-hunk', folder, path, previous, hunk),
   navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
   openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),
   browserCommand: (command) => ipcRenderer.invoke('browser:command', command),
@@ -63,6 +74,20 @@ const api: OsvaCodeApi = {
     const listener = (_event: Electron.IpcRendererEvent, state: BrowserState): void => callback(state)
     ipcRenderer.on('browser:state', listener)
     return () => ipcRenderer.removeListener('browser:state', listener)
+  },
+  opencodeStatus: () => ipcRenderer.invoke('opencode:status'),
+  opencodeEnsure: (input) => ipcRenderer.invoke('opencode:ensure', input),
+  opencodeModels: () => ipcRenderer.invoke('opencode:models'),
+  opencodeUseModel: (sessionID, model) => ipcRenderer.invoke('opencode:model', sessionID, model),
+  opencodePrompt: (sessionID, text) => ipcRenderer.invoke('opencode:prompt', sessionID, text),
+  opencodeInterrupt: (sessionID) => ipcRenderer.invoke('opencode:interrupt', sessionID),
+  opencodePermission: (sessionID, requestID, decision) =>
+    ipcRenderer.invoke('opencode:permission', sessionID, requestID, decision),
+  opencodeDiff: (sessionID) => ipcRenderer.invoke('opencode:diff', sessionID),
+  onOpenCode: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, notice: OpenCodeNotice): void => callback(notice)
+    ipcRenderer.on('opencode:event', listener)
+    return () => ipcRenderer.removeListener('opencode:event', listener)
   }
 }
 

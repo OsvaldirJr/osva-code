@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, Download, Folder, Trash2, ArrowUp, Square } from 'lucide-react'
-import type { DesignKind } from '../../../shared/design'
+import { ChevronLeft, Copy, Download, Folder, Trash2, ArrowUp, Square } from 'lucide-react'
+import type { DesignFrame, DesignKind } from '../../../shared/design'
 import { DESIGN_KINDS } from '../../../shared/design'
-import { DesignCanvas, downloadFrame, sampleFrame } from './DesignCanvas'
+import { DesignCanvas, downloadFrame, downloadPdf, sampleFrame } from './DesignCanvas'
 
 export interface DesignNote {
   role: 'user' | 'assistant'
@@ -46,6 +46,7 @@ export function DesignPanel({
   onCreate,
   onDelete,
   onRename,
+  onPatch,
   onAsk,
   onPickFolder,
   onStop
@@ -58,6 +59,7 @@ export function DesignPanel({
   onCreate: (kind: DesignKind) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
+  onPatch: (id: string, frames: DesignFrame[]) => void
   onAsk: (id: string, prompt: string) => void
   onPickFolder: (id: string) => void
   onStop: () => void
@@ -160,9 +162,36 @@ export function DesignPanel({
           type="button"
           className="ghost"
           disabled={!frame}
+          onClick={() => {
+            if (!frame) return
+            const copy: DesignFrame = {
+              ...frame,
+              name: `${frame.name} cópia`,
+              elements: frame.elements.map((element) => ({ ...element }))
+            }
+            const next = [...active.frames]
+            next.splice(frameIndex + 1, 0, copy)
+            onPatch(active.id, next)
+            setFrameIndex(frameIndex + 1)
+          }}
+        >
+          <Copy size={14} /> Duplicar
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={!frame}
           onClick={() => frame && downloadFrame(frame, active.title)}
         >
           <Download size={14} /> PNG
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={active.frames.length === 0}
+          onClick={() => downloadPdf(active.frames, active.title)}
+        >
+          <Download size={14} /> PDF
         </button>
         <button type="button" className="ghost icon" title="Apagar design" onClick={() => onDelete(active.id)}>
           <Trash2 size={16} />
@@ -171,7 +200,23 @@ export function DesignPanel({
 
       <div className="design-stage">
         {frame ? (
-          <DesignCanvas frame={frame} animate={active.kind === 'motion' || frame.elements.some((item) => item.motion)} />
+          <DesignCanvas
+            frame={frame}
+            animate={active.kind === 'motion' || frame.elements.some((item) => item.motion)}
+            onMove={(index, x, y) => {
+              const next = active.frames.map((item, itemIndex) =>
+                itemIndex === frameIndex
+                  ? {
+                      ...item,
+                      elements: item.elements.map((element, elementIndex) =>
+                        elementIndex === index ? { ...element, x, y } : element
+                      )
+                    }
+                  : item
+              )
+              onPatch(active.id, next)
+            }}
+          />
         ) : (
           <p className="design-empty">O canvas está vazio. Peça o desenho abaixo.</p>
         )}

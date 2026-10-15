@@ -40,7 +40,12 @@ const DEFAULT_SETTINGS: AppSettings = {
     enabled: false
   },
   teams: [],
-  automations: []
+  automations: [],
+  opencode: {
+    url: 'http://127.0.0.1:4096',
+    username: 'opencode',
+    password: ''
+  }
 }
 
 function defaultUserName(): string {
@@ -64,7 +69,11 @@ export function loadSettings(): AppSettings {
         ...DEFAULT_SETTINGS,
         ...raw,
         teams: Array.isArray(raw.teams) ? raw.teams : [],
-        automations: Array.isArray(raw.automations) ? raw.automations : []
+        automations: Array.isArray(raw.automations) ? raw.automations : [],
+        opencode: {
+          ...DEFAULT_SETTINGS.opencode,
+          ...(raw.opencode ?? {})
+        }
       }
     }
   } catch (err) {

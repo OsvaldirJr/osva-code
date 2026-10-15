@@ -188,6 +188,7 @@ body {
 
 .sidebar-tabs button {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -200,6 +201,107 @@ body {
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+.sidebar-tabs button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-sections {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.opencode-sections button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.opencode-sections button.active {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.opencode-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0 6px;
+  border-radius: 99px;
+  background: #f07178;
+  flex-shrink: 0;
+}
+
+.opencode-dot.on {
+  background: #3dd68c;
+}
+
+.opencode-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.opencode-pane article {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.opencode-pane header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.opencode-pane pre,
+.opencode-pane p {
+  margin: 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.opencode-permission-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.opencode-permission-actions button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .sidebar-tabs button:hover:not(.active) {
@@ -623,6 +725,37 @@ body {
   margin: 8px 2px 0;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+.auto-tunnel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.auto-tunnel button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.auto-tunnel button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.auto-tunnel-url {
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .auto-instructions {
@@ -1266,6 +1399,39 @@ body {
   text-align: center;
   color: var(--text-dim);
   padding: 28px 8px;
+}
+
+.opencode-setup {
+  margin: 18px auto 0;
+  max-width: 460px;
+  text-align: left;
+}
+
+.opencode-setup ol {
+  margin: 0;
+  padding-left: 1.25em;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.opencode-setup li {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.opencode-setup button {
+  display: block;
+  margin: 16px auto 0;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .empty-state h1 {
@@ -3366,6 +3532,61 @@ button:active:not(:disabled) {
   opacity: 0.8;
 }
 
+.diff-hunk {
+  margin: 4px 0;
+  border-left: 2px solid rgba(240, 113, 120, 0.4);
+}
+
+.diff-hunk > button {
+  margin: 2px 12px 4px auto;
+  display: block;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.terminal-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.terminal-log article {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.terminal-log header {
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.terminal-log article.fail header {
+  color: #ffd0d3;
+}
+
+.terminal-log pre {
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
 .artifact-caption span {
   color: var(--text-dim);
   font-size: 11px;
@@ -3601,6 +3822,15 @@ button:active:not(:disabled) {
   display: block;
   border-radius: 10px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.design-canvas.editable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.design-canvas.editable:active {
+  cursor: grabbing;
 }
 
 .design-frames,

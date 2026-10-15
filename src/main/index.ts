@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray } from 'electron'
 import {
   attachEmbeddedBrowser,
   browserCommand,
@@ -34,8 +34,22 @@ import {
 import { expandSlashCommands, listSlashCommands } from './slashCommands'
 import { readFileAttachment, readFolderAttachment, readImageAttachment } from './attach'
 import { startAutomationHooks } from './automationHooks'
+import { startTunnel, stopTunnel, tunnelUrl } from './tunnel'
+import {
+  ensureOpenCodeSession,
+  interruptOpenCode,
+  openCodeDiff,
+  listOpenCodeModels,
+  openCodeStatus,
+  promptOpenCode,
+  switchOpenCodeModel,
+  replyOpenCodePermission,
+  startOpenCodeStream
+} from './opencode'
+import { rejectWorkspaceHunk, restoreWorkspaceFile, type HunkEdit } from './workspaceActions'
 import { AUTOMATION_HOOK_PORT } from '../shared/types'
 import { designInstructions } from '../shared/design'
+import type { AutomationHookEvent, OpenCodeModel, OpenCodeNotice } from '../shared/types'
 import type {
   AppSettings,
   AuthSession,
@@ -58,13 +72,16 @@ let settings: AppSettings = {
   toolPermissions: {},
   openWebUi: { url: '', apiKey: '', enabled: false },
   teams: [],
-  automations: []
+  automations: [],
+  opencode: { url: 'http://127.0.0.1:4096', username: 'opencode', password: '' }
 }
 const mcp = new McpManager()
 const activeRequests = new Map<string, AbortController>()
 const pendingPermissions = new Map<string, (decision: PermissionDecision) => void>()
 let session: AuthSession | null = null
 let hookPort = AUTOMATION_HOOK_PORT
+let tray: Tray | null = null
+let quitting = false
 
 /** Normaliza a URL do servidor de login (aceita sem protocolo, remove barra final). */
 function resolveServerUrl(raw?: string): string {
@@ -151,6 +168,12 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  mainWindow.on('close', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    mainWindow?.hide()
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -162,6 +185,10 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+function publishOpenCode(notice: OpenCodeNotice): void {
+  mainWindow?.webContents.send('opencode:event', notice)
 }
 
 function emitTo(requestId: string, event: StreamEvent): void {
@@ -179,12 +206,66 @@ function registerIpc(): void {
   ipcMain.handle('settings:save', async (_event, next: AppSettings) => {
     settings = next
     saveSettings(settings)
+    startOpenCodeStream(settings.opencode, publishOpenCode)
     await mcp.sync(settings.mcpServers)
     return mcp.status(settings.mcpServers)
   })
 
   ipcMain.handle('mcp:status', () => mcp.status(settings.mcpServers))
   ipcMain.handle('hooks:port', () => hookPort)
+
+  ipcMain.handle('opencode:status', () => openCodeStatus(settings.opencode))
+  ipcMain.handle('opencode:models', () => listOpenCodeModels(settings.opencode))
+  ipcMain.handle('opencode:model', (_event, sessionID: string, model: OpenCodeModel) =>
+    switchOpenCodeModel(settings.opencode, sessionID, model)
+  )
+  ipcMain.handle(
+    'opencode:ensure',
+    (_event, input: { sessionID: string | null; directory: string; title: string; model?: OpenCodeModel | null }) =>
+      ensureOpenCodeSession(settings.opencode, input).then((sessionID) => ({ sessionID }))
+  )
+  ipcMain.handle('opencode:prompt', (_event, sessionID: string, text: string) =>
+    promptOpenCode(settings.opencode, sessionID, text)
+  )
+  ipcMain.handle('opencode:interrupt', (_event, sessionID: string) => interruptOpenCode(settings.opencode, sessionID))
+  ipcMain.handle(
+    'opencode:permission',
+    (_event, sessionID: string, requestID: string, decision: 'once' | 'always' | 'reject') =>
+      replyOpenCodePermission(settings.opencode, sessionID, requestID, decision)
+  )
+  ipcMain.handle('opencode:diff', (_event, sessionID: string) => openCodeDiff(settings.opencode, sessionID))
+
+  const publishTunnel = (url: string | null): void => {
+    mainWindow?.webContents.send('automation:tunnel', url)
+    refreshTray()
+  }
+
+  ipcMain.handle('hooks:tunnel-status', () => tunnelUrl())
+  ipcMain.handle('hooks:tunnel-stop', () => {
+    stopTunnel()
+    publishTunnel(null)
+  })
+  ipcMain.handle('hooks:tunnel-start', async () => {
+    try {
+      const url = await startTunnel(hookPort, () => publishTunnel(null))
+      publishTunnel(url)
+      return { url }
+    } catch (err) {
+      publishTunnel(null)
+      return { url: null, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(
+    'workspace:revert',
+    (_event, folder: string, filePath: string, previous: string | null) =>
+      restoreWorkspaceFile(folder, filePath, previous)
+  )
+  ipcMain.handle(
+    'workspace:revert-hunk',
+    (_event, folder: string, filePath: string, previous: string | null, hunk: HunkEdit) =>
+      rejectWorkspaceHunk(folder, filePath, previous, hunk)
+  )
 
   ipcMain.handle('models:list', async (_event, providerId: string) => {
     const provider = settings.providers.find((p) => p.id === providerId)
@@ -520,33 +601,120 @@ function registerPowerHandlers(): void {
   })
 }
 
+function trayIcon(): Electron.NativeImage {
+  const size = 16
+  const bitmap = Buffer.alloc(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - 7.5
+      const dy = y - 7.5
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const i = (y * size + x) * 4
+      bitmap[i + 3] = dist < 6.2 && dist > 3.4 ? 255 : 0
+    }
+  }
+  const image = nativeImage.createFromBitmap(bitmap, { width: size, height: size })
+  image.setTemplateImage(true)
+  return image
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) createWindow()
+  else {
+    mainWindow.show()
+    mainWindow.focus()
+  }
+}
+
+function refreshTray(): void {
+  if (!tray) return
+  const url = tunnelUrl()
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { label: 'Abrir OsvaCode', click: () => showMainWindow() },
+    {
+      label: url ? 'Encerrar túnel' : 'Abrir túnel',
+      click: () => {
+        if (url) {
+          stopTunnel()
+          mainWindow?.webContents.send('automation:tunnel', null)
+          refreshTray()
+          return
+        }
+        void startTunnel(hookPort, () => {
+          mainWindow?.webContents.send('automation:tunnel', null)
+          refreshTray()
+        })
+          .then((next) => {
+            mainWindow?.webContents.send('automation:tunnel', next)
+            refreshTray()
+          })
+          .catch(() => refreshTray())
+      }
+    }
+  ]
+  if (url) template.push({ label: url, enabled: false })
+  template.push(
+    { type: 'separator' },
+    {
+      label: 'Sair',
+      click: () => {
+        quitting = true
+        stopTunnel()
+        app.quit()
+      }
+    }
+  )
+  tray.setContextMenu(template.length ? Menu.buildFromTemplate(template) : null)
+  tray.setToolTip(url ? `OsvaCode · ${url}` : 'OsvaCode')
+}
+
+function installTray(): void {
+  tray = new Tray(trayIcon())
+  tray.on('click', () => showMainWindow())
+  refreshTray()
+}
+
+function deliverHook(event: AutomationHookEvent): void {
+  const note = new Notification({
+    title: 'OsvaCode',
+    body: 'Uma ferramenta disparou uma automatização.'
+  })
+  note.on('click', () => showMainWindow())
+  note.show()
+  if (!mainWindow) createWindow()
+  const send = (): void => {
+    mainWindow?.webContents.send('automation:hook', event)
+  }
+  if (mainWindow?.webContents.isLoading()) mainWindow.webContents.once('did-finish-load', send)
+  else send()
+}
+
 app.whenReady().then(async () => {
   settings = loadSettings()
   session = loadSessionFile()
   registerIpc()
   try {
-    hookPort = await startAutomationHooks(
-      () => settings,
-      (event) => {
-        mainWindow?.webContents.send('automation:hook', event)
-      }
-    )
+    hookPort = await startAutomationHooks(() => settings, deliverHook)
   } catch (err) {
     console.error('Não foi possível abrir o endereço das automações:', err)
   }
   registerPowerHandlers()
+  installTray()
   createWindow()
+  startOpenCodeStream(settings.opencode, publishOpenCode)
   await mcp.sync(settings.mcpServers)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    showMainWindow()
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // O ícone na barra mantém os webhooks e os horários enquanto o processo vive.
 })
 
 app.on('before-quit', () => {
+  quitting = true
+  stopTunnel()
   void mcp.closeAll()
 })

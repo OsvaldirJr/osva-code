@@ -9,12 +9,50 @@ import {
   Globe,
   RotateCw,
   Square,
+  TerminalSquare,
   X
 } from 'lucide-react'
-import type { BrowserState, FileChange } from '../../../shared/types'
+import type { BrowserState, DiffLine, FileChange } from '../../../shared/types'
 import { artifactFromChange, type Artifact } from '../artifacts'
 
-export type WorkbenchTab = 'changes' | 'artifacts' | 'browser'
+export type WorkbenchTab = 'changes' | 'artifacts' | 'browser' | 'terminal'
+
+export interface CommandRun {
+  command: string
+  output: string
+  ok: boolean
+  at: number
+}
+
+export interface ReviewHunk {
+  removed: string[]
+  added: string[]
+  after: string | null
+  lines: DiffLine[]
+}
+
+export function reviewHunks(lines: DiffLine[]): ReviewHunk[] {
+  const hunks: ReviewHunk[] = []
+  let current: ReviewHunk | null = null
+  const flush = (after: string | null): void => {
+    if (!current) return
+    current.after = after
+    if (current.removed.length > 0 || current.added.length > 0) hunks.push(current)
+    current = null
+  }
+  for (const line of lines) {
+    if (line.type === 'ctx' || line.type === 'gap') {
+      flush(line.type === 'ctx' ? line.text : null)
+      continue
+    }
+    current ??= { removed: [], added: [], after: null, lines: [] }
+    current.lines.push(line)
+    if (line.type === 'del') current.removed.push(line.text)
+    if (line.type === 'add') current.added.push(line.text)
+  }
+  flush(null)
+  return hunks
+}
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -34,7 +72,11 @@ export function Workbench({
   onClose,
   onSelectArtifact,
   onOpenArtifact,
-  onClearChanges
+  onClearChanges,
+  commands,
+  onAcceptChange,
+  onRevertChange,
+  onRevertHunk
 }: {
   changes: FileChange[]
   artifacts: Artifact[]
@@ -46,6 +88,10 @@ export function Workbench({
   onSelectArtifact: (id: string) => void
   onOpenArtifact: (artifact: Artifact) => void
   onClearChanges: () => void
+  commands: CommandRun[]
+  onAcceptChange: (path: string) => void
+  onRevertChange: (change: FileChange) => void
+  onRevertHunk: (change: FileChange, hunk: ReviewHunk) => void
 }): JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
   const [browser, setBrowser] = useState<BrowserState>(EMPTY_BROWSER)
@@ -130,6 +176,10 @@ export function Workbench({
           <button className={tab === 'browser' ? 'active' : ''} onClick={() => onTab('browser')}>
             <Globe size={14} /> Navegador
           </button>
+          <button className={tab === 'terminal' ? 'active' : ''} onClick={() => onTab('terminal')}>
+            <TerminalSquare size={14} /> Terminal
+            {commands.length > 0 && <span className="panel-count">{commands.length}</span>}
+          </button>
         </div>
         <button className="workbench-close" title="Fechar painel" onClick={onClose}>
           <X size={15} />
@@ -170,6 +220,10 @@ export function Workbench({
                   <div className="change-path">
                     <span title={selected.path}>{selected.path}</span>
                     <span className="change-actions">
+                      <button onClick={() => onAcceptChange(selected.path)}>Aceitar</button>
+                      {selected.previous !== undefined && (
+                        <button onClick={() => onRevertChange(selected)}>Desfazer</button>
+                      )}
                       {artifactFromChange(selected) && (
                         <button onClick={() => onOpenArtifact(artifactFromChange(selected)!)}>
                           Pré-visualizar
@@ -191,19 +245,31 @@ export function Workbench({
                     {selected.lines.length === 0 ? (
                       <div className="diff-line gap">Arquivo vazio</div>
                     ) : (
-                      selected.lines.map((line, index) => (
-                        <div key={index} className={`diff-line ${line.type}`}>
-                          <span className="diff-mark">
-                            {line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}
-                          </span>
-                          <span className="diff-text">{line.text}</span>
-                        </div>
-                      ))
+                      renderDiff(selected, onRevertHunk)
                     )}
                   </div>
                 </div>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {tab === 'terminal' && (
+        <div className="workbench-body">
+          {commands.length === 0 ? (
+            <div className="workbench-empty">
+              Quando o modelo rodar um comando na pasta, a saída aparece aqui.
+            </div>
+          ) : (
+            <div className="terminal-log">
+              {commands.map((run) => (
+                <article key={run.at} className={run.ok ? 'ok' : 'fail'}>
+                  <header>$ {run.command}</header>
+                  <pre>{run.output}</pre>
+                </article>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -336,6 +402,43 @@ function frameDocument(artifact: Artifact): string {
   if (artifact.kind === 'svg') return artifact.content
   if (/<html[\s>]/i.test(artifact.content)) return artifact.content
   return `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:16px;font-family:sans-serif;color:#1c1c1c}</style></head><body>${artifact.content}</body></html>`
+}
+
+function renderDiff(change: FileChange, onRevertHunk: (change: FileChange, hunk: ReviewHunk) => void): JSX.Element {
+  const hunks = reviewHunks(change.lines)
+  let hunkIndex = 0
+  const nodes: JSX.Element[] = []
+  for (let index = 0; index < change.lines.length; index++) {
+    const line = change.lines[index]
+    if ((line.type === 'add' || line.type === 'del') && hunks[hunkIndex] && hunks[hunkIndex].lines[0] === line) {
+      const hunk = hunks[hunkIndex]
+      hunkIndex++
+      nodes.push(
+        <div key={`hunk-${index}`} className="diff-hunk">
+          {change.previous !== undefined && (
+            <button type="button" onClick={() => onRevertHunk(change, hunk)}>
+              Recusar trecho
+            </button>
+          )}
+          {hunk.lines.map((item, lineIndex) => (
+            <div key={lineIndex} className={`diff-line ${item.type}`}>
+              <span className="diff-mark">{item.type === 'add' ? '+' : item.type === 'del' ? '−' : ''}</span>
+              <span className="diff-text">{item.text}</span>
+            </div>
+          ))}
+        </div>
+      )
+      index += hunk.lines.length - 1
+      continue
+    }
+    nodes.push(
+      <div key={index} className={`diff-line ${line.type}`}>
+        <span className="diff-mark">{line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}</span>
+        <span className="diff-text">{line.text}</span>
+      </div>
+    )
+  }
+  return <>{nodes}</>
 }
 
 function kindLabel(kind: FileChange['kind']): string {

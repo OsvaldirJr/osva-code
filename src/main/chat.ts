@@ -10,6 +10,7 @@ import { normalizeDesign, type DesignContext } from '../shared/design'
 import type { McpManager } from './mcp'
 import { beginFileChange } from './changes'
 import { applyWorkspaceEdit, normalizeWorkspacePath } from './fileEdit'
+import { runInFolder, searchWorkspace } from './workspaceActions'
 import { explainToolCall, summarizeToolResult, SIMPLIFY_SYSTEM_PROMPT } from './humanizer'
 
 /**
@@ -155,6 +156,35 @@ const WORKSPACE_DESCRIPTION: Record<string, string> = {
   search_files: 'Procura arquivos pelo nome. Parâmetros path e pattern.'
 }
 
+const SEARCH_TOOL: ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'search_in_files',
+    description: 'Busca texto e nomes de arquivo na pasta de trabalho. Parâmetro query. path é opcional e relativo à pasta.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        path: { type: 'string' }
+      },
+      required: ['query']
+    }
+  }
+}
+
+const RUN_TOOL: ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'run_command',
+    description: 'Roda um comando dentro da pasta de trabalho, por exemplo testes ou o servidor. Parâmetro command. Pede permissão.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command']
+    }
+  }
+}
+
 const DESIGN_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
@@ -200,7 +230,10 @@ function buildTools(mcp: McpManager, design: boolean): ChatCompletionTool[] {
       }
     ]
   })
-  return design ? [DESIGN_TOOL, ...tools] : tools
+  const extra: ChatCompletionTool[] = []
+  if (design) extra.push(DESIGN_TOOL)
+  if (mcp.workspaceFolder()) extra.push(SEARCH_TOOL, RUN_TOOL)
+  return [...extra, ...tools]
 }
 
 function firstSentence(text: string): string {
@@ -454,11 +487,13 @@ function extractTextualToolCalls(text: string, mcp: McpManager): PendingToolCall
       const name = typeof obj.name === 'string' ? obj.name : typeof fn === 'string' ? fn : inner?.name
       // aceita nome completo (servidor__ferramenta) ou o nome "cru" (ex.: "read_file")
       const entry = typeof name === 'string' ? mcp.resolveTool(name) : undefined
-      if (!entry) continue
+      const local = typeof name === 'string' && (name === 'search_in_files' || name === 'run_command')
+      if (!entry && !local) continue
       const rawArgs = obj.arguments ?? obj.parameters ?? inner?.arguments ?? inner?.parameters ?? {}
       const args = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs)
-      if (!calls.some((c) => c.name === entry.fullName && c.args === args)) {
-        calls.push({ id: `textcall_${Date.now()}_${calls.length}`, name: entry.fullName, args })
+      const callName = entry?.fullName ?? (typeof name === 'string' ? name : '')
+      if (callName && !calls.some((c) => c.name === callName && c.args === args)) {
+        calls.push({ id: `textcall_${Date.now()}_${calls.length}`, name: callName, args })
       }
     } catch {
       // não era JSON válido; ignora
@@ -551,6 +586,7 @@ export async function runChat(options: {
     tools.length > 0
       ? '\n\nQuando o usuário pedir para criar ou alterar um arquivo, chame write_file com o path absoluto desse arquivo e o conteúdo real. ' +
         'Se ele pedir para editar algo que já existe, use o mesmo path. Não invente outro arquivo. ' +
+        'Para achar um texto na pasta, use search_in_files. Para rodar testes ou um comando, use run_command. ' +
         'Se ele só fizer uma pergunta, responda em texto e não chame ferramenta.'
       : ''
   const fileContext = allowFileWrites && folder && tools.length > 0 ? currentFileBlock(folder, history) : ''
@@ -686,6 +722,89 @@ export async function runChat(options: {
             role: 'tool',
             tool_call_id: tc.id,
             content: ok ? resultText : `Erro ao executar a ferramenta: ${resultText}`
+          })
+          continue
+        }
+        const localName =
+          tc.name === 'search_in_files' || tc.name === 'run_command'
+            ? tc.name
+            : tc.name.endsWith('__search_in_files')
+              ? 'search_in_files'
+              : tc.name.endsWith('__run_command')
+                ? 'run_command'
+                : null
+        if (localName) {
+          let parsed: Record<string, unknown> = {}
+          try {
+            parsed = flattenToolArgs(tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {})
+          } catch {
+            parsed = {}
+          }
+          const command = typeof parsed.command === 'string' ? parsed.command : ''
+          const query = typeof parsed.query === 'string' ? parsed.query : ''
+          const explanation =
+            localName === 'run_command'
+              ? `Vou rodar este comando na pasta de trabalho:\n${command || '(vazio)'}`
+              : `Vou buscar “${query || '(vazio)'}” nos arquivos da pasta.`
+          const decision = await requestPermission({
+            callId: tc.id,
+            fullName: localName,
+            toolName: localName,
+            serverName: 'Pasta de trabalho',
+            explanation
+          })
+          if (signal.aborted) {
+            emit({ type: 'done' })
+            return { ok: false, text: assistantText }
+          }
+          if (decision === 'deny') {
+            emit({
+              type: 'tool-end',
+              callId: tc.id,
+              ok: false,
+              denied: true,
+              summary: 'Você não autorizou esta ação — sigo sem executá-la.'
+            })
+            messages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: 'O usuário NEGOU a permissão. Não tente de novo; pergunte como ele prefere prosseguir.'
+            })
+            continue
+          }
+          emit({
+            type: 'tool-start',
+            callId: tc.id,
+            toolName: localName,
+            serverName: 'Pasta de trabalho',
+            explanation
+          })
+          let resultText = ''
+          let ok = true
+          try {
+            if (!folder) throw new Error('Nenhuma pasta de trabalho definida.')
+            if (localName === 'search_in_files') {
+              resultText = searchWorkspace(folder, query, typeof parsed.path === 'string' ? parsed.path : undefined)
+            } else {
+              const ran = await runInFolder(folder, command, signal)
+              resultText = ran.output
+              ok = ran.ok
+              emit({ type: 'command-output', command, output: ran.output, ok: ran.ok })
+            }
+          } catch (err) {
+            ok = false
+            resultText = err instanceof Error ? err.message : String(err)
+          }
+          emit({
+            type: 'tool-end',
+            callId: tc.id,
+            ok,
+            summary: ok ? resultText.slice(0, 180) : resultText.slice(0, 200)
+          })
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: localName === 'run_command' ? resultText : ok ? resultText : `Erro ao executar a ferramenta: ${resultText}`
           })
           continue
         }

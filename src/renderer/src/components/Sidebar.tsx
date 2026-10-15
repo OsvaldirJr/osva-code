@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
 import { conversationKind, folderKey, folderLabel, shortPath, type Conversation, type ConversationKind } from '../App'
-import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette } from 'lucide-react'
+import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette, Bot } from 'lucide-react'
 
 const SIDEBAR_COLLAPSED_KEY = 'osvacode.sidebar.collapsed'
 const GROUP_COLLAPSED_KEY = 'osvacode.sidebar.groupCollapsed'
@@ -269,6 +269,13 @@ export function Sidebar({
         >
           <Code2 size={14} /> <span>DevMode</span>
         </button>
+        <button
+          className={tab === 'opencode' ? 'active' : ''}
+          title="OpenCode"
+          onClick={() => onTabChange('opencode')}
+        >
+          <Bot size={14} /> <span>OpenCode</span>
+        </button>
       </div>
 
       <div className="conversation-list">
@@ -278,7 +285,9 @@ export function Sidebar({
               ? 'Nenhuma conversa com esse texto.'
               : tab === 'dev'
                 ? 'Nenhuma conversa de DevMode ainda. Escolha a pasta: as desta mesma pasta ficam juntas.'
-                : 'Nenhuma conversa ainda. Crie uma para começar.'}
+                : tab === 'opencode'
+                  ? 'Nenhuma conversa do OpenCode ainda. Escolha a pasta em que o agente vai trabalhar.'
+                  : 'Nenhuma conversa ainda. Crie uma para começar.'}
           </p>
         )}
         {groups.map((group) => {

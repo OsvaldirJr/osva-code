@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import type { AppSettings, McpServerConfig, McpServerStatus, ProviderConfig } from '../../../shared/types'
-import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users } from 'lucide-react'
+import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users, Bot } from 'lucide-react'
 import { AgentTeamsPanel } from './AgentTeamsPanel'
 
-type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes'
+type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes' | 'opencode'
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
@@ -18,7 +18,14 @@ export function SettingsModal({
   onClose: () => void
   onSave: (settings: AppSettings) => Promise<void>
 }): JSX.Element {
-  const [draft, setDraft] = useState<AppSettings>(() => structuredClone(settings))
+  const [draft, setDraft] = useState<AppSettings>(() => ({
+    ...structuredClone(settings),
+    opencode: {
+      url: settings.opencode?.url || 'http://127.0.0.1:4096',
+      username: settings.opencode?.username || 'opencode',
+      password: settings.opencode?.password ?? ''
+    }
+  }))
   const [tab, setTab] = useState<Tab>('modelos')
   const [saving, setSaving] = useState(false)
   const [modelSuggestions, setModelSuggestions] = useState<Record<string, string[]>>({})
@@ -142,6 +149,13 @@ export function SettingsModal({
             style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
             <Users size={14} /> Equipes
+          </button>
+          <button
+            className={tab === 'opencode' ? 'active' : ''}
+            onClick={() => setTab('opencode')}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Bot size={14} /> OpenCode
           </button>
         </nav>
 
@@ -434,6 +448,50 @@ export function SettingsModal({
                 </p>
               </div>
             </>
+          )}
+
+          {tab === 'opencode' && (
+            <div className="card">
+              <p className="help">
+                A aba OpenCode fala com o <code>opencode serve</code> nesta máquina. O padrão é a porta 4096.
+                Se você definiu OPENCODE_SERVER_PASSWORD, use a mesma senha aqui.
+              </p>
+              <label>
+                Endereço
+                <input
+                  value={draft.opencode.url}
+                  onChange={(e) =>
+                    setDraft((current) => ({ ...current, opencode: { ...current.opencode, url: e.target.value } }))
+                  }
+                />
+              </label>
+              <label>
+                Usuário
+                <input
+                  value={draft.opencode.username}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      opencode: { ...current.opencode, username: e.target.value }
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Senha
+                <input
+                  type="password"
+                  value={draft.opencode.password}
+                  placeholder="vazia se o servidor não pede senha"
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      opencode: { ...current.opencode, password: e.target.value }
+                    }))
+                  }
+                />
+              </label>
+            </div>
           )}
         </div>
 

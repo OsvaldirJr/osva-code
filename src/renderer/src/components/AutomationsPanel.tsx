@@ -102,6 +102,10 @@ export function AutomationsPanel({
   mcpStatus,
   userName,
   hookPort,
+  tunnelUrl,
+  tunnelBusy,
+  tunnelMessage,
+  onToggleTunnel,
   busy,
   onSave,
   onDelete,
@@ -114,6 +118,10 @@ export function AutomationsPanel({
   mcpStatus: McpServerStatus[]
   userName: string
   hookPort: number
+  tunnelUrl: string | null
+  tunnelBusy: boolean
+  tunnelMessage: string
+  onToggleTunnel: () => void
   busy: boolean
   onSave: (automation: Automation) => void
   onDelete: (id: string) => void
@@ -319,9 +327,18 @@ export function AutomationsPanel({
                         type="button"
                         className="auto-hook-url"
                         title={HOOK_SOURCES.find((item) => item.source === trigger.source)?.hint}
-                        onClick={() => void navigator.clipboard.writeText(automationHookUrl(trigger.token!, hookPort))}
+                        onClick={() =>
+                          void navigator.clipboard.writeText(
+                            tunnelUrl
+                              ? `${tunnelUrl.replace(/\/$/, '')}/hooks/${trigger.token}`
+                              : automationHookUrl(trigger.token!, hookPort)
+                          )
+                        }
                       >
-                        <Copy size={12} /> {automationHookUrl(trigger.token, hookPort)}
+                        <Copy size={12} />{' '}
+                        {tunnelUrl
+                          ? `${tunnelUrl.replace(/\/$/, '')}/hooks/${trigger.token}`
+                          : automationHookUrl(trigger.token, hookPort)}
                       </button>
                     )}
                   </div>
@@ -426,8 +443,16 @@ export function AutomationsPanel({
                 )}
               </div>
             </div>
+            <div className="auto-tunnel">
+              <button type="button" disabled={tunnelBusy} onClick={onToggleTunnel}>
+                {tunnelBusy ? 'Abrindo túnel…' : tunnelUrl ? 'Encerrar túnel' : 'Abrir túnel público'}
+              </button>
+              {tunnelUrl && <span className="auto-tunnel-url">{tunnelUrl}</span>}
+            </div>
+            {tunnelMessage && <p className="auto-hint">{tunnelMessage}</p>}
             <p className="auto-hint">
-              Horários e ferramentas disparam com o OsvaCode aberto e a automatização ativa. A URL fica neste computador.
+              O ícone na barra de menus mantém horários e webhooks com a janela fechada. Sem túnel, a URL fica neste
+              computador. Com o túnel aberto, a URL copiada chega da internet.
             </p>
           </section>
 

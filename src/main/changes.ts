@@ -115,7 +115,27 @@ function buildChange(rel: string, before: ReadResult, after: ReadResult): FileCh
         ]
       : full
   const preview = after.status === 'text' ? previewOf(rel, after.text) : undefined
-  return { path: rel, kind, additions, deletions, lines, preview }
+  const revertable =
+    (before.status !== 'text' || before.text.length <= 200_000) &&
+    (after.status !== 'text' || after.text.length <= 200_000)
+  return {
+    path: rel,
+    kind,
+    additions,
+    deletions,
+    lines,
+    preview,
+    ...(revertable ? { previous: before.status === 'text' ? before.text : null } : {})
+  }
+}
+
+/** Diferença entre o texto anterior guardado e o arquivo depois de aceitar ou recusar um trecho. */
+export function changeBetween(rel: string, previous: string | null, next: string | null): FileChange | null {
+  return buildChange(
+    rel,
+    previous === null ? { status: 'missing' } : { status: 'text', text: previous },
+    next === null ? { status: 'missing' } : { status: 'text', text: next }
+  )
 }
 
 function previewOf(rel: string, text: string): string | undefined {

@@ -6,6 +6,10 @@ import type {
   AutomationHookEvent,
   ChatEventPayload,
   ChatMessage,
+  FileChange,
+  OpenCodeFileDiff,
+  OpenCodeModel,
+  OpenCodeNotice,
   PickedAttachment,
   ChatSendOptions,
   McpServerStatus,
@@ -74,6 +78,18 @@ export interface OsvaCodeApi {
   /** Porta local dos webhooks de GitHub, Slack e das outras ferramentas. */
   hookPort: () => Promise<number>
   onAutomationHook: (callback: (event: AutomationHookEvent) => void) => () => void
+  tunnelStatus: () => Promise<string | null>
+  tunnelStart: () => Promise<{ url: string | null; error?: string }>
+  tunnelStop: () => Promise<void>
+  onTunnel: (callback: (url: string | null) => void) => () => void
+  /** Restaura o arquivo ao texto anterior. null apaga um arquivo que foi criado. */
+  revertWorkspace: (folder: string, path: string, previous: string | null) => Promise<FileChange | null>
+  revertHunk: (
+    folder: string,
+    path: string,
+    previous: string | null,
+    hunk: { removed: string[]; added: string[]; after: string | null }
+  ) => Promise<FileChange | null>
   /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */
   navigateBrowser: (url: string) => Promise<BrowserState>
   /** Abre um arquivo da pasta de trabalho atual no navegador embutido. */
@@ -85,4 +101,18 @@ export interface OsvaCodeApi {
   /** Abre a URL atual no navegador do sistema. */
   openBrowserExternal: () => Promise<void>
   onBrowserState: (callback: (state: BrowserState) => void) => () => void
+  opencodeStatus: () => Promise<{ online: boolean; message: string }>
+  opencodeEnsure: (input: {
+    sessionID: string | null
+    directory: string
+    title: string
+    model?: OpenCodeModel | null
+  }) => Promise<{ sessionID: string }>
+  opencodeModels: () => Promise<{ models: OpenCodeModel[]; defaultModel: OpenCodeModel | null }>
+  opencodeUseModel: (sessionID: string, model: OpenCodeModel) => Promise<void>
+  opencodePrompt: (sessionID: string, text: string) => Promise<void>
+  opencodeInterrupt: (sessionID: string) => Promise<void>
+  opencodePermission: (sessionID: string, requestID: string, decision: 'once' | 'always' | 'reject') => Promise<void>
+  opencodeDiff: (sessionID: string) => Promise<OpenCodeFileDiff[]>
+  onOpenCode: (callback: (notice: OpenCodeNotice) => void) => () => void
 }
