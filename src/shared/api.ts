@@ -3,12 +3,15 @@ import type {
   AuthSession,
   BrowserBounds,
   BrowserState,
+  AutomationHookEvent,
   ChatEventPayload,
   ChatMessage,
+  PickedAttachment,
   ChatSendOptions,
   McpServerStatus,
   PermissionDecision,
   RemoteChatStub,
+  SlashCommand,
   SyncMessage,
   SyncPushPayload
 } from './types'
@@ -20,6 +23,8 @@ export interface OsvaCodeApi {
   getMcpStatus: () => Promise<McpServerStatus[]>
   listModels: (providerId: string) => Promise<string[]>
   pickFolder: () => Promise<string | null>
+  /** Imagem, arquivo ou pasta para anexar na mensagem. Null se o usuário cancelar. */
+  pickAttachment: (kind: 'image' | 'file' | 'folder') => Promise<PickedAttachment[] | null>
   sendChat: (requestId: string, history: ChatMessage[], options?: ChatSendOptions) => Promise<void>
   simplify: (requestId: string, text: string) => Promise<void>
   respondPermission: (permissionId: string, decision: PermissionDecision) => Promise<void>
@@ -30,10 +35,11 @@ export interface OsvaCodeApi {
   syncPush: (payload: SyncPushPayload) => Promise<string | null>
   /** Apaga a conversa no Open WebUI; retorna false se falhar. */
   syncDelete: (owuiId: string) => Promise<boolean>
-  /** Lê instructions.md, skills e notas do .osvacode da pasta do projeto. */
+  /** Lê instructions.md, skills, ações e notas do .osvacode da pasta do projeto. */
   projectRead: (folder: string) => Promise<{
     instructions: string
     skills: { name: string; content: string }[]
+    actions: { name: string; content: string }[]
     notes: string
   }>
   projectSaveInstructions: (folder: string, content: string) => Promise<void>
@@ -46,6 +52,11 @@ export interface OsvaCodeApi {
   /** Salva a skill e retorna o nome normalizado do arquivo. */
   projectSaveSkill: (folder: string, name: string, content: string) => Promise<string>
   projectDeleteSkill: (folder: string, name: string) => Promise<void>
+  /** Salva a ação (/nome) e retorna o nome normalizado do arquivo. */
+  projectSaveAction: (folder: string, name: string, content: string) => Promise<string>
+  projectDeleteAction: (folder: string, name: string) => Promise<void>
+  /** Comandos de barra (/ação e /skill) disponíveis; sem pasta, só as ações embutidas. */
+  projectCommands: (folder: string | null) => Promise<SlashCommand[]>
   getSession: () => Promise<AuthSession | null>
   /** serverUrl opcional: quando informado, passa a ser o servidor padrão do app. */
   login: (email: string, password: string, serverUrl?: string) => Promise<AuthSession>
@@ -60,6 +71,9 @@ export interface OsvaCodeApi {
   loginAnonymous: () => Promise<AuthSession>
   logout: () => Promise<void>
   onChatEvent: (callback: (payload: ChatEventPayload) => void) => () => void
+  /** Porta local dos webhooks de GitHub, Slack e das outras ferramentas. */
+  hookPort: () => Promise<number>
+  onAutomationHook: (callback: (event: AutomationHookEvent) => void) => () => void
   /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */
   navigateBrowser: (url: string) => Promise<BrowserState>
   /** Abre um arquivo da pasta de trabalho atual no navegador embutido. */

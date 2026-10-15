@@ -6,7 +6,23 @@ com suporte a **servidores MCP** (ferramentas/plugins) e **respostas humanizadas
 ## Funcionalidades
 
 - 🧠 **Múltiplos modelos** — qualquer provedor compatível com a API da OpenAI: Ollama, LM Studio,
-  vLLM, OpenRouter, OpenAI, etc. Troque de modelo pelo seletor no topo da janela.
+  vLLM, OpenRouter, OpenAI, etc. Troque de modelo pelo seletor do campo de mensagem ou pelo
+  rodapé do menu. A bolinha ao lado do campo mostra o uso de tokens da conversa.
+- 🗂️ **Menu lateral** — Nova conversa, Pesquisa, Automatização e Design. O menu pode ser
+  minimizado para uma faixa de ícones. No DevMode, as conversas da mesma pasta ficam juntas.
+- 📎 **Anexos** — o botão **+** envia imagem, arquivo ou pasta. Imagens vão para modelos que
+  enxergam; arquivos e pastas entram como texto, com limite de tamanho. Segredos (`.env`, chaves)
+  são listados sem o conteúdo.
+- ⚡ **Automatização** — lista de automações com interruptor de ativa/inativa. Gatilhos manuais,
+  agendados (a cada hora, todo dia, dias úteis, toda semana, todo mês) e por ferramenta
+  (GitHub, Slack, Microsoft Teams, Sentry, Linear, Webhook e PagerDuty). Cada ferramenta ganha
+  uma URL local (`http://127.0.0.1:47321/hooks/…`) para colar no webhook. O OsvaCode precisa
+  estar aberto, e a ferramenta só alcança o endereço se conseguir chegar neste computador.
+- 🎨 **Design** — área de canvas abaixo de Automatização. O modelo desenha apresentação, tela,
+  interface a partir do código, sistema de design ou motion com a ferramenta `design_canvas`.
+  Dá para baixar o quadro em PNG.
+- ⌘ **Comandos /** — no campo de mensagem, `/` abre ações e skills do projeto (por exemplo
+  `/revisar` e `/explicar`).
 - 🔌 **MCP e plugins** — adicione servidores MCP nas Configurações; as ferramentas deles ficam
   disponíveis para o modelo automaticamente.
 - 💬 **Retorno humanizado**:
@@ -63,13 +79,16 @@ Marque **Habilitado** e salve — o app conecta na hora e mostra as ferramentas 
 src/
 ├── main/            # processo principal do Electron (Node)
 │   ├── index.ts     # janela, IPC, ciclo de vida
-│   ├── chat.ts      # loop de agente: streaming + execução de ferramentas
+│   ├── chat.ts      # loop de agente: streaming, ferramentas e design_canvas
 │   ├── mcp.ts       # conexão com servidores MCP (SDK oficial, stdio)
+│   ├── automationHooks.ts # webhooks locais das automações
+│   ├── attach.ts    # leitura de imagem, arquivo e pasta anexados
+│   ├── slashCommands.ts # expansão dos comandos /
 │   ├── humanizer.ts # traduz eventos técnicos para linguagem simples
 │   └── config.ts    # settings.json em userData
 ├── preload/         # ponte segura (contextBridge) entre main e renderer
-├── renderer/        # interface React (chat, cartões de ferramenta, configurações)
-└── shared/          # tipos compartilhados
+├── renderer/        # interface React (chat, automações, design, configurações)
+└── shared/          # tipos compartilhados, inclusive o documento do canvas
 ```
 
 As configurações ficam em `~/Library/Application Support/osvacode/settings.json`.

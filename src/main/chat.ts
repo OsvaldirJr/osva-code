@@ -1,8 +1,12 @@
 import { existsSync, readFileSync, statSync } from 'fs'
 import { basename } from 'path'
 import OpenAI from 'openai'
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions'
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool
+} from 'openai/resources/chat/completions'
 import type { ChatMessage, FileChange, ProviderConfig, StreamEvent } from '../shared/types'
+import { normalizeDesign, type DesignContext } from '../shared/design'
 import type { McpManager } from './mcp'
 import { beginFileChange } from './changes'
 import { applyWorkspaceEdit, normalizeWorkspacePath } from './fileEdit'
@@ -59,6 +63,68 @@ const MAX_TOOL_ROUNDS = 25
  */
 const MAX_TOOL_FAILURES = 3
 
+const contextCache = new Map<string, number | null>()
+
+/** Janela de contexto do modelo, via Ollama (`/api/show`). Null se o servidor não informar. */
+async function modelContextTokens(provider: ProviderConfig): Promise<number | null> {
+  const key = `${provider.baseURL}\n${provider.model}`
+  const cached = contextCache.get(key)
+  if (cached !== undefined) return cached
+  let value: number | null = null
+  if (/11434|ollama/i.test(provider.baseURL)) {
+    try {
+      const root = new URL(provider.baseURL)
+      root.pathname = root.pathname.replace(/\/v1\/?$/, '')
+      root.search = ''
+      root.hash = ''
+      const response = await fetch(`${root.toString().replace(/\/$/, '')}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: provider.model }),
+        signal: AbortSignal.timeout(2000)
+      })
+      if (response.ok) {
+        const data = (await response.json()) as {
+          parameters?: string
+          model_info?: Record<string, unknown>
+        }
+        const params = typeof data.parameters === 'string' ? data.parameters : ''
+        const numCtx = params.match(/(?:^|\n)\s*num_ctx\s+(\d+)/)
+        if (numCtx) value = Number(numCtx[1])
+        if (value == null && data.model_info) {
+          for (const [name, entry] of Object.entries(data.model_info)) {
+            if (name.endsWith('context_length') && typeof entry === 'number' && entry > 0) {
+              value = entry
+              break
+            }
+          }
+        }
+      }
+    } catch {
+      value = null
+    }
+  }
+  contextCache.set(key, value)
+  return value
+}
+
+function toCompletionMessage(message: ChatMessage): ChatCompletionMessageParam {
+  if (message.role !== 'user' || !message.images?.length) {
+    return { role: message.role, content: message.content }
+  }
+  const text = message.content.trim()
+  return {
+    role: 'user',
+    content: [
+      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...message.images.map((image) => ({
+        type: 'image_url' as const,
+        image_url: { url: image.dataUrl }
+      }))
+    ]
+  }
+}
+
 function makeClient(provider: ProviderConfig): OpenAI {
   return new OpenAI({
     baseURL: provider.baseURL,
@@ -89,12 +155,30 @@ const WORKSPACE_DESCRIPTION: Record<string, string> = {
   search_files: 'Procura arquivos pelo nome. Parâmetros path e pattern.'
 }
 
-function buildTools(mcp: McpManager): ChatCompletionTool[] {
+const DESIGN_TOOL: ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'design_canvas',
+    description:
+      'Desenha o design aberto no canvas. Envie title e frames. Cada frame tem name, width, height, background e elements.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        kind: { type: 'string' },
+        frames: { type: 'array', items: { type: 'object' } }
+      },
+      required: ['frames']
+    }
+  }
+}
+
+function buildTools(mcp: McpManager, design: boolean): ChatCompletionTool[] {
   const all = mcp.listNamespacedTools()
   const hasReadText = all.some(
     (entry) => entry.serverId === '__workspace' && entry.tool.name === 'read_text_file'
   )
-  return all.flatMap((entry) => {
+  const tools = all.flatMap((entry) => {
     const workspace = entry.serverId === '__workspace'
     if (workspace && (WORKSPACE_SKIP.has(entry.tool.name) || (hasReadText && entry.tool.name === 'read_file'))) {
       return []
@@ -116,6 +200,7 @@ function buildTools(mcp: McpManager): ChatCompletionTool[] {
       }
     ]
   })
+  return design ? [DESIGN_TOOL, ...tools] : tools
 }
 
 function firstSentence(text: string): string {
@@ -395,6 +480,32 @@ export interface ChatRunResult {
   text: string
 }
 
+function designPayloadFromText(text: string): Record<string, unknown> | null {
+  const fence = text.match(/```design\s*\n([\s\S]*?)```/)
+  const candidates = fence?.[1] ? [fence[1]] : []
+  candidates.push(...findJsonObjects(text))
+  for (const raw of candidates) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      if (Array.isArray(parsed.frames)) return parsed
+      const nested = parsed.arguments ?? parsed.parameters
+      const name = parsed.name ?? parsed.function
+      if (
+        nested &&
+        typeof nested === 'object' &&
+        !Array.isArray(nested) &&
+        Array.isArray((nested as Record<string, unknown>).frames) &&
+        (name === 'design_canvas' || name === undefined)
+      ) {
+        return nested as Record<string, unknown>
+      }
+    } catch {
+      // o próximo candidato pode ser o desenho
+    }
+  }
+  return null
+}
+
 export async function runChat(options: {
   provider: ProviderConfig
   systemPrompt: string
@@ -403,6 +514,7 @@ export async function runChat(options: {
   emit: (event: StreamEvent) => void
   requestPermission: (request: PermissionRequest) => Promise<'allow' | 'deny'>
   signal: AbortSignal
+  design?: DesignContext
   /** No modo propor o modelo não deve ser cobrado a gravar arquivo. */
   allowFileWrites?: boolean
   /** Etapas intermediárias de uma equipe não escrevem no chat; só devolvem o texto. */
@@ -418,7 +530,20 @@ export async function runChat(options: {
     return { ok: true, text }
   }
   const client = makeClient(provider)
-  const tools = buildTools(mcp)
+  const contextTokensPromise = modelContextTokens(provider)
+  const tools = buildTools(mcp, Boolean(options.design))
+  let designApplied = false
+  const publishDesignText = (text: string): void => {
+    if (!options.design || designApplied) return
+    const payload = designPayloadFromText(text)
+    if (!payload) return
+    try {
+      emit({ type: 'design-update', design: normalizeDesign(payload, options.design) })
+      designApplied = true
+    } catch {
+      // o texto não era um desenho válido; a resposta segue em texto
+    }
+  }
 
   const folder = mcp.workspaceFolder()
   const allowFileWrites = options.allowFileWrites !== false && !!folder
@@ -432,7 +557,7 @@ export async function runChat(options: {
 
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt + toolRules + fileContext },
-    ...history.map((m) => ({ role: m.role, content: m.content }) as ChatCompletionMessageParam)
+    ...history.map(toCompletionMessage)
   ]
 
   // falhas consecutivas por ferramenta ao longo de toda a geração
@@ -450,20 +575,39 @@ export async function runChat(options: {
       const useTools = tools.length > 0 && !lastRound
 
       idleAbort = new AbortController()
-      const stream = await client.chat.completions.create(
-        {
-          model: provider.model,
-          messages,
-          stream: true,
-          ...(useTools ? { tools } : {})
-        },
-        { signal: AbortSignal.any([signal, idleAbort.signal]) }
-      )
+      const request = {
+        model: provider.model,
+        messages,
+        stream: true as const,
+        ...(useTools ? { tools } : {})
+      }
+      const streamSignal = AbortSignal.any([signal, idleAbort.signal])
+      let stream: Awaited<ReturnType<typeof client.chat.completions.create>>
+      try {
+        stream = await client.chat.completions.create(
+          { ...request, stream_options: { include_usage: true } },
+          { signal: streamSignal }
+        )
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err)
+        if (!/stream_options|unknown field|unrecognized|unexpected/i.test(raw)) throw err
+        stream = await client.chat.completions.create(request, { signal: streamSignal })
+      }
 
       let assistantText = ''
       const toolCalls: PendingToolCall[] = []
+      let roundUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null
 
       for await (const chunk of watchIdle(stream, idleAbort, FIRST_CHUNK_TIMEOUT_MS, IDLE_TIMEOUT_MS)) {
+        const counted = chunk.usage
+        if (counted && typeof counted.prompt_tokens === 'number') {
+          const completionTokens = counted.completion_tokens ?? 0
+          roundUsage = {
+            promptTokens: counted.prompt_tokens,
+            completionTokens,
+            totalTokens: counted.total_tokens ?? counted.prompt_tokens + completionTokens
+          }
+        }
         const delta = chunk.choices[0]?.delta
         if (!delta) continue
         if (delta.content) {
@@ -478,8 +622,16 @@ export async function runChat(options: {
         }
       }
 
+      if (roundUsage) {
+        emit({
+          type: 'usage',
+          usage: { ...roundUsage, contextTokens: await contextTokensPromise }
+        })
+      }
+
       // Sem ferramentas nesta rodada (a última): o texto gerado É a resposta final.
       if (!useTools) {
+        publishDesignText(assistantText)
         return succeed(assistantText)
       }
 
@@ -487,6 +639,7 @@ export async function runChat(options: {
         // fallback: o modelo escreveu a chamada como texto em vez de usar tool calling
         const textual = assistantText ? extractTextualToolCalls(assistantText, mcp) : []
         if (textual.length === 0) {
+          publishDesignText(assistantText)
           return succeed(assistantText)
         }
         toolCalls.push(...textual)
@@ -503,6 +656,39 @@ export async function runChat(options: {
       })
 
       for (const tc of toolCalls) {
+        if (options.design && (tc.name === 'design_canvas' || tc.name.endsWith('__design_canvas'))) {
+          emit({
+            type: 'tool-start',
+            callId: tc.id,
+            toolName: 'design_canvas',
+            serverName: 'Design',
+            explanation: 'Desenhar no canvas.'
+          })
+          let resultText = ''
+          let ok = true
+          try {
+            const parsed = tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {}
+            const doc = normalizeDesign(flattenToolArgs(parsed), options.design)
+            emit({ type: 'design-update', design: doc })
+            designApplied = true
+            resultText = `Canvas atualizado: “${doc.title}”, ${doc.frames.length} quadro(s).`
+          } catch (err) {
+            ok = false
+            resultText = err instanceof Error ? err.message : String(err)
+          }
+          emit({
+            type: 'tool-end',
+            callId: tc.id,
+            ok,
+            summary: ok ? 'O canvas foi atualizado.' : resultText
+          })
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: ok ? resultText : `Erro ao executar a ferramenta: ${resultText}`
+          })
+          continue
+        }
         const entry = mcp.lookup(tc.name)
         const toolName = entry?.tool.name ?? tc.name
         const serverName = entry?.serverName ?? 'desconhecido'

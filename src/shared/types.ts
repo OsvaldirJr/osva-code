@@ -68,6 +68,68 @@ export interface AppSettings {
   openWebUi: OpenWebUiConfig
   /** Equipes de agentes para tarefas que precisam de mais de um modelo. */
   teams: AgentTeam[]
+  /** Tarefas salvas que o usuário dispara de novo pelo menu Automatização. */
+  automations: Automation[]
+}
+
+export type AutomationSchedule = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly'
+
+export type AutomationHookSource =
+  | 'github'
+  | 'slack'
+  | 'teams'
+  | 'sentry'
+  | 'linear'
+  | 'webhook'
+  | 'pagerduty'
+
+/** Porta local que recebe os webhooks das ferramentas. */
+export const AUTOMATION_HOOK_PORT = 47321
+
+export function automationHookUrl(token: string, port = AUTOMATION_HOOK_PORT): string {
+  return `http://127.0.0.1:${port}/hooks/${token}`
+}
+
+/** Quando a automatização pode ser disparada. */
+export interface AutomationTrigger {
+  id: string
+  kind: 'manual' | 'schedule' | 'hook'
+  label: string
+  schedule?: AutomationSchedule
+  source?: AutomationHookSource
+  /** Segredo da URL local. Quem tem o endereço dispara a automatização. */
+  token?: string
+  createdAt?: number
+  lastFiredAt?: number
+}
+
+/** Evento recebido de uma ferramenta ligada à automatização. */
+export interface AutomationHookEvent {
+  automationId: string
+  triggerId: string
+  source: AutomationHookSource
+  summary: string
+}
+
+/** Uma execução disparada pelo usuário. */
+export interface AutomationRun {
+  at: number
+  conversationId: string
+}
+
+/** Tarefa salva: um pedido pronto para abrir uma conversa e enviar. */
+export interface Automation {
+  id: string
+  name: string
+  prompt: string
+  kind: 'chat' | 'dev'
+  folder?: string
+  /** Desligada não roda. Ausente nas automações antigas significa ligada. */
+  enabled?: boolean
+  /** Modelo desta automatização. Vazio = o modelo ativo do app. */
+  providerId?: string | null
+  triggers?: AutomationTrigger[]
+  runs?: AutomationRun[]
 }
 
 /** Conversa existente no Open WebUI (para importação). */
@@ -107,6 +169,35 @@ export interface McpServerStatus {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /** Imagens desta mensagem, em data URL, para modelos que enxergam. */
+  images?: { dataUrl: string }[]
+}
+
+/** O que o usuário adicionou pelo botão + do campo de mensagem. */
+export type PickedAttachment =
+  | { kind: 'image'; name: string; dataUrl: string }
+  | { kind: 'file'; name: string; text: string }
+  | { kind: 'folder'; name: string; text: string }
+
+/**
+ * Comando de barra disponível no campo de mensagem.
+ * - action: prompt pronto (.osvacode/actions/*.md ou embutido no app); `/nome args`.
+ * - skill: força uma skill do projeto nesta mensagem; `/nome` (pode encadear várias).
+ */
+export interface SlashCommand {
+  name: string
+  kind: 'action' | 'skill'
+  description: string
+  source: 'project' | 'builtin'
+}
+
+/** Contagem de tokens devolvida pelo modelo. */
+export interface ModelUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  /** Tamanho da janela de contexto, quando o servidor informa. */
+  contextTokens: number | null
 }
 
 export interface ChatSendOptions {
@@ -116,6 +207,10 @@ export interface ChatSendOptions {
   mode?: 'edit' | 'propose'
   /** Equipe desta mensagem. Vazio = só o modelo ativo. */
   teamId?: string | null
+  /** Modelo desta mensagem. Vazio = o modelo ativo do app. */
+  providerId?: string | null
+  /** Design aberto no canvas. Liga a ferramenta design_canvas. */
+  design?: import('./design').DesignContext
 }
 
 /** Eventos emitidos pelo processo principal durante uma geração. */
@@ -138,6 +233,8 @@ export type StreamEvent =
     }
   | { type: 'tool-end'; callId: string; ok: boolean; denied?: boolean; summary: string }
   | { type: 'done' }
+  /** Tokens contados pelo modelo nesta rodada. promptTokens é o contexto enviado. */
+  | { type: 'usage'; usage: ModelUsage }
   | { type: 'error'; message: string }
   | {
       type: 'agent-start'
@@ -151,6 +248,8 @@ export type StreamEvent =
   | { type: 'agent-end'; agentId: string; ok: boolean; summary: string }
   /** Arquivo da pasta de trabalho criado, editado ou removido durante a geração. */
   | { type: 'file-change'; change: FileChange }
+  /** Desenho pronto para o canvas da área Design. */
+  | { type: 'design-update'; design: import('./design').DesignSnapshot }
   /** Geração interrompida por algo externo (computador dormiu, conexão caiu): é retomável. */
   | { type: 'interrupted'; message: string }
 

@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
 import { basename, join } from 'path'
 import { detectSkills, SKILL_CATALOG } from './skillCatalog'
+import { isManualSkill } from './slashCommands'
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -59,6 +60,24 @@ com as instruções do projeto. Bons usos:
 
 Arquivos que começam com "_" (como este) são ignorados. Para criar uma skill,
 copie este arquivo com outro nome (ex.: testes.md) e escreva as instruções.
+
+Toda skill também pode ser chamada no chat com /nome-da-skill. Para que ela
+NÃO seja enviada sempre, só quando chamada por /nome, adicione no cabeçalho:
+ativacao: manual
+`
+
+const ACTION_TEMPLATE = `---
+nome: _exemplo
+descricao: Modelo de ação — duplique este arquivo para criar as suas
+---
+
+Uma ação é um prompt pronto, disparado no chat digitando /nome-da-acao.
+Exemplo: o arquivo "documentar.md" vira o comando /documentar.
+
+Tudo o que o usuário digitar depois do comando entra no lugar de $ARGUMENTOS.
+Ex.: "/documentar src/api.ts" → o modelo recebe este texto com "src/api.ts".
+
+Arquivos que começam com "_" (como este) são ignorados.
 `
 
 const CONFIG_TEMPLATE = { version: 1 }
@@ -152,6 +171,11 @@ export function ensureProjectDir(folder: string): void {
 
     const exampleSkill = join(skillsDir, '_exemplo.md')
     if (!existsSync(exampleSkill)) writeFileSync(exampleSkill, SKILL_TEMPLATE, 'utf-8')
+
+    const actionsDir = join(dir, 'actions')
+    if (!existsSync(actionsDir)) mkdirSync(actionsDir)
+    const exampleAction = join(actionsDir, '_exemplo.md')
+    if (!existsSync(exampleAction)) writeFileSync(exampleAction, ACTION_TEMPLATE, 'utf-8')
   } catch (err) {
     console.error(`Não foi possível criar ${DIR_NAME} em ${folder}:`, err)
   }
@@ -194,7 +218,7 @@ export function loadProjectContext(folder: string): ProjectContext {
         if (!file.endsWith('.md') || file.startsWith('_')) continue
         if (total >= MAX_TOTAL_SKILLS_CHARS) break
         const content = readFileSync(join(skillsDir, file), 'utf-8').trim()
-        if (!content) continue
+        if (!content || isManualSkill(content)) continue
         const truncated = truncate(content, MAX_SKILL_CHARS)
         total += truncated.length
         context.skills.push({ name: basename(file, '.md'), content: truncated })
@@ -292,6 +316,7 @@ export function installCatalogSkill(folder: string, id: string): void {
 export interface ProjectFiles {
   instructions: string
   skills: ProjectSkill[]
+  actions: ProjectSkill[]
   notes: string
 }
 
@@ -305,6 +330,19 @@ function skillFileName(name: string): string {
     .replace(/^[-_.]+|[-.]+$/g, '')
   if (!clean) throw new Error('Nome de skill inválido.')
   return `${clean}.md`
+}
+
+function readMarkdownDir(dir: string): ProjectSkill[] {
+  const items: ProjectSkill[] = []
+  try {
+    for (const file of readdirSync(dir).sort()) {
+      if (!file.endsWith('.md') || file.startsWith('_')) continue
+      items.push({ name: basename(file, '.md'), content: readFileSync(join(dir, file), 'utf-8') })
+    }
+  } catch {
+    // pasta ainda não existe
+  }
+  return items
 }
 
 /** Conteúdo bruto dos arquivos do projeto, para edição no app. */
@@ -322,16 +360,8 @@ export function readProjectFiles(folder: string): ProjectFiles {
     instructions = ''
   }
 
-  const skills: ProjectSkill[] = []
-  try {
-    const skillsDir = join(dir, 'skills')
-    for (const file of readdirSync(skillsDir).sort()) {
-      if (!file.endsWith('.md') || file.startsWith('_')) continue
-      skills.push({ name: basename(file, '.md'), content: readFileSync(join(skillsDir, file), 'utf-8') })
-    }
-  } catch {
-    // sem skills
-  }
+  const skills = readMarkdownDir(join(dir, 'skills'))
+  const actions = readMarkdownDir(join(dir, 'actions'))
 
   let notes = ''
   try {
@@ -340,7 +370,7 @@ export function readProjectFiles(folder: string): ProjectFiles {
   } catch {
     // sem notas
   }
-  return { instructions, skills, notes }
+  return { instructions, skills, actions, notes }
 }
 
 export function saveProjectNotes(folder: string, content: string): void {
@@ -364,6 +394,20 @@ export function saveProjectSkill(folder: string, name: string, content: string):
 export function deleteProjectSkill(folder: string, name: string): void {
   const file = skillFileName(name)
   const path = join(folder, DIR_NAME, 'skills', file)
+  if (existsSync(path)) unlinkSync(path)
+}
+
+/** Salva/cria uma ação (/nome); retorna o nome normalizado usado no arquivo. */
+export function saveProjectAction(folder: string, name: string, content: string): string {
+  ensureProjectDir(folder)
+  const file = skillFileName(name)
+  writeFileSync(join(folder, DIR_NAME, 'actions', file), content, 'utf-8')
+  return basename(file, '.md')
+}
+
+export function deleteProjectAction(folder: string, name: string): void {
+  const file = skillFileName(name)
+  const path = join(folder, DIR_NAME, 'actions', file)
   if (existsSync(path)) unlinkSync(path)
 }
 

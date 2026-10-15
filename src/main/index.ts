@@ -19,16 +19,23 @@ import { clearSessionFile, loadSessionFile, owuiSignin, owuiSignup, saveSessionF
 import {
   autoInstallSkills,
   catalogStatus,
+  deleteProjectAction,
   deleteProjectSkill,
   ensureProjectDir,
   installCatalogSkill,
   loadProjectContext,
   projectPromptBlock,
   readProjectFiles,
+  saveProjectAction,
   saveProjectInstructions,
   saveProjectNotes,
   saveProjectSkill
 } from './project'
+import { expandSlashCommands, listSlashCommands } from './slashCommands'
+import { readFileAttachment, readFolderAttachment, readImageAttachment } from './attach'
+import { startAutomationHooks } from './automationHooks'
+import { AUTOMATION_HOOK_PORT } from '../shared/types'
+import { designInstructions } from '../shared/design'
 import type {
   AppSettings,
   AuthSession,
@@ -50,12 +57,14 @@ let settings: AppSettings = {
   userName: '',
   toolPermissions: {},
   openWebUi: { url: '', apiKey: '', enabled: false },
-  teams: []
+  teams: [],
+  automations: []
 }
 const mcp = new McpManager()
 const activeRequests = new Map<string, AbortController>()
 const pendingPermissions = new Map<string, (decision: PermissionDecision) => void>()
 let session: AuthSession | null = null
+let hookPort = AUTOMATION_HOOK_PORT
 
 /** Normaliza a URL do servidor de login (aceita sem protocolo, remove barra final). */
 function resolveServerUrl(raw?: string): string {
@@ -175,6 +184,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('mcp:status', () => mcp.status(settings.mcpServers))
+  ipcMain.handle('hooks:port', () => hookPort)
 
   ipcMain.handle('models:list', async (_event, providerId: string) => {
     const provider = settings.providers.find((p) => p.id === providerId)
@@ -202,15 +212,48 @@ function registerIpc(): void {
     return folder
   })
 
+  ipcMain.handle('dialog:pickAttachment', async (_event, kind: 'image' | 'file' | 'folder') => {
+    if (!mainWindow) return null
+    if (kind === 'folder') {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Adicionar pasta',
+        buttonLabel: 'Adicionar',
+        properties: ['openDirectory']
+      })
+      const folder = result.canceled ? null : (result.filePaths[0] ?? null)
+      return folder ? [readFolderAttachment(folder)] : null
+    }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: kind === 'image' ? 'Adicionar imagem' : 'Adicionar arquivo',
+      buttonLabel: 'Adicionar',
+      properties: ['openFile', 'multiSelections'],
+      filters:
+        kind === 'image'
+          ? [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+          : [{ name: 'Arquivos', extensions: ['*'] }]
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const picked = result.filePaths.flatMap((filePath) => {
+      if (kind === 'image') {
+        const image = readImageAttachment(filePath)
+        return image ? [image] : []
+      }
+      return [readFileAttachment(filePath)]
+    })
+    return picked.length > 0 ? picked : null
+  })
+
   ipcMain.handle(
     'chat:send',
     async (_event, requestId: string, history: ChatMessage[], options?: ChatSendOptions) => {
-      const provider = activeProvider()
+      const provider = options?.providerId
+        ? (settings.providers.find((item) => item.id === options.providerId) ?? activeProvider())
+        : activeProvider()
       const team = options?.teamId
         ? (settings.teams ?? []).find((item) => item.id === options.teamId)
         : undefined
       const useTeam = !!team && team.steps.length > 0
-      if (!useTeam && !provider) {
+      if ((!useTeam || options?.design) && !provider) {
         emitTo(requestId, {
           type: 'error',
           message: 'Nenhum provedor de modelo configurado. Abra as Configurações.'
@@ -221,6 +264,14 @@ function registerIpc(): void {
       const folder = options?.folder ?? null
       const mode = options?.mode ?? 'edit'
       await mcp.setWorkspace(folder)
+
+      // "/acao args" e "/skill" viram o prompt completo só no que vai ao modelo;
+      // a conversa na tela continua mostrando o comando curto que o usuário digitou
+      history = history.map((message) =>
+        message.role === 'user'
+          ? { ...message, content: expandSlashCommands(folder, message.content) }
+          : message
+      )
 
       let systemPrompt = folder
         ? `${settings.systemPrompt}\n\nPasta de trabalho: ${folder}.\n` +
@@ -242,12 +293,16 @@ function registerIpc(): void {
         systemPrompt += '\n\nATENÇÃO: Você está no modo "APENAS PROPOR". VOCÊ ESTÁ PROIBIDO DE MODIFICAR, ESCREVER OU CRIAR ARQUIVOS. Apenas sugira e mostre os códigos na resposta.'
       }
 
+      if (options?.design) {
+        systemPrompt += `\n\n${designInstructions(options.design)}`
+      }
+
       const controller = new AbortController()
       activeRequests.set(requestId, controller)
       const emit = (event: Parameters<typeof emitTo>[1]): void => emitTo(requestId, event)
       const requestPermission = (request: PermissionRequest): Promise<'allow' | 'deny'> =>
         resolvePermission(requestId, request, controller.signal)
-      const run = useTeam
+      const run = useTeam && !options?.design
         ? runTeam({
             team: team!,
             providers: settings.providers,
@@ -267,7 +322,8 @@ function registerIpc(): void {
             emit,
             requestPermission,
             signal: controller.signal,
-            allowFileWrites: mode !== 'propose'
+            allowFileWrites: mode !== 'propose',
+            design: options?.design
           })
       void run.finally(() => activeRequests.delete(requestId))
     }
@@ -352,6 +408,16 @@ function registerIpc(): void {
   ipcMain.handle('project:delete-skill', (_event, folder: string, name: string) => {
     deleteProjectSkill(folder, name)
   })
+
+  ipcMain.handle('project:save-action', (_event, folder: string, name: string, content: string) => {
+    return saveProjectAction(folder, name, content)
+  })
+
+  ipcMain.handle('project:delete-action', (_event, folder: string, name: string) => {
+    deleteProjectAction(folder, name)
+  })
+
+  ipcMain.handle('project:commands', (_event, folder: string | null) => listSlashCommands(folder))
 
   ipcMain.handle('sync:delete', async (_event, owuiId: string) => {
     const auth = syncAuth()
@@ -458,6 +524,16 @@ app.whenReady().then(async () => {
   settings = loadSettings()
   session = loadSessionFile()
   registerIpc()
+  try {
+    hookPort = await startAutomationHooks(
+      () => settings,
+      (event) => {
+        mainWindow?.webContents.send('automation:hook', event)
+      }
+    )
+  } catch (err) {
+    console.error('Não foi possível abrir o endereço das automações:', err)
+  }
   registerPowerHandlers()
   createWindow()
   await mcp.sync(settings.mcpServers)

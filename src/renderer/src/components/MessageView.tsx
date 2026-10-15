@@ -20,10 +20,28 @@ export function MessageView({
   onOpenArtifact: (artifact: Artifact) => void
 }): JSX.Element {
   if (message.kind === 'user') {
+    const attachmentAt = message.content.search(/(?:^|\n)--- (Arquivo anexado|Pasta anexada)/)
+    const spoken = (attachmentAt >= 0 ? message.content.slice(0, attachmentAt) : message.content)
+      .replace(/^\[Imagem anexada:.*\]$/gm, '')
+      .trim()
+    const attached = attachmentAt >= 0 ? message.content.slice(attachmentAt).trim() : ''
     return (
       <div className="row user">
         <div className="bubble user-bubble">
-          {message.content}
+          {message.images && message.images.length > 0 && (
+            <div className="user-images">
+              {message.images.map((image, index) => (
+                <img key={index} src={image.dataUrl} alt="" />
+              ))}
+            </div>
+          )}
+          {spoken}
+          {attached && (
+            <details className="user-attachment">
+              <summary>Conteúdo anexado</summary>
+              <pre>{attached}</pre>
+            </details>
+          )}
           <button 
             className="copy-user-btn" 
             title="Copiar texto" 

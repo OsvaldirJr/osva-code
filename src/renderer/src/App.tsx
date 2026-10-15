@@ -1,28 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AppSettings,
+  Automation,
+  AutomationHookEvent,
   AuthSession,
   ChatMessage,
+  PickedAttachment,
   FileChange,
   McpServerStatus,
-  RemoteChatStub
+  RemoteChatStub,
+  SlashCommand
 } from '../../shared/types'
+import { AUTOMATION_HOOK_PORT } from '../../shared/types'
+import type { DesignKind } from '../../shared/design'
+import { DESIGN_KINDS } from '../../shared/design'
 import { AgentCard } from './components/AgentCard'
 import { MessageView } from './components/MessageView'
 import { ToolCallCard } from './components/ToolCallCard'
 import { ErrorBubble } from './components/ErrorBubble'
 import { SettingsModal } from './components/SettingsModal'
 import { Sidebar } from './components/Sidebar'
+import { AutomationsPanel, HOOK_SOURCES, scheduleIsDue } from './components/AutomationsPanel'
+import { DesignPanel, type DesignDoc } from './components/DesignPanel'
 import { LoginScreen } from './components/LoginScreen'
 import { ProjectPanel } from './components/ProjectPanel'
+import { SlashMenu, filterSlashCommands, slashQuery } from './components/SlashMenu'
 import { Workbench, type WorkbenchTab } from './components/Workbench'
 import type { Artifact } from './artifacts'
 import {
-  FolderOpen, Plus, Settings, AlertTriangle, Folder, Paperclip, Mic, Square, Send, X, NotebookPen, PanelRight
+  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight
 } from 'lucide-react'
 
 export type UiMessage =
-  | { kind: 'user'; id: string; content: string }
+  | { kind: 'user'; id: string; content: string; images?: { dataUrl: string }[] }
   | {
       kind: 'assistant'
       id: string
@@ -56,6 +66,47 @@ export type UiMessage =
       summary?: string
     }
 
+type DraftAttachment = PickedAttachment & { id: string }
+
+function toChatMessages(messages: UiMessage[]): ChatMessage[] {
+  return messages
+    .filter((message): message is Extract<UiMessage, { kind: 'user' | 'assistant' }> =>
+      message.kind === 'user' || message.kind === 'assistant'
+    )
+    .map((message) => ({
+      role: message.kind,
+      content: message.content,
+      ...(message.kind === 'user' && message.images?.length ? { images: message.images } : {})
+    }))
+}
+
+function shrinkImage(dataUrl: string): Promise<string> {
+  if (dataUrl.startsWith('data:image/svg')) return Promise.resolve(dataUrl)
+  return new Promise((resolve) => {
+    const image = new window.Image()
+    image.onload = () => {
+      const max = 1600
+      const scale = Math.min(1, max / Math.max(image.width, image.height))
+      if (scale === 1 && dataUrl.length < 500_000) {
+        resolve(dataUrl)
+        return
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(image.width * scale))
+      canvas.height = Math.max(1, Math.round(image.height * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        resolve(dataUrl)
+        return
+      }
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/jpeg', 0.82))
+    }
+    image.onerror = () => resolve(dataUrl)
+    image.src = dataUrl
+  })
+}
+
 export type ConversationKind = 'chat' | 'dev'
 
 export interface Conversation {
@@ -72,6 +123,94 @@ export interface Conversation {
   owuiId?: string
   /** true até o título ser tirado da primeira mensagem */
   autoTitle?: boolean
+  /** Última contagem de tokens desta conversa. */
+  usage?: ConversationUsage
+}
+
+export interface ConversationUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  contextTokens: number | null
+  /** Soma das respostas geradas nesta conversa. */
+  generatedTokens: number
+}
+
+function formatTokens(value: number): string {
+  return new Intl.NumberFormat('pt-BR').format(value)
+}
+
+function UsageOrb({
+  usage,
+  open,
+  modelName,
+  modelId,
+  onToggle
+}: {
+  usage?: ConversationUsage
+  open: boolean
+  modelName: string
+  modelId: string
+  onToggle: () => void
+}): JSX.Element {
+  const radius = 6
+  const circumference = 2 * Math.PI * radius
+  const ratio =
+    usage?.contextTokens && usage.contextTokens > 0
+      ? Math.min(1, usage.promptTokens / usage.contextTokens)
+      : 0
+  const tone = ratio >= 0.9 ? 'high' : ratio >= 0.7 ? 'mid' : 'ok'
+  return (
+    <>
+      <button type="button" className="composer-orb" title="Uso do modelo" onClick={onToggle}>
+        <svg className="usage-ring" viewBox="0 0 16 16" aria-hidden="true">
+          <circle className="track" cx="8" cy="8" r={radius} />
+          <circle
+            className={`fill ${tone}`}
+            cx="8"
+            cy="8"
+            r={radius}
+            strokeDasharray={`${circumference * ratio} ${circumference}`}
+            transform="rotate(-90 8 8)"
+          />
+        </svg>
+      </button>
+      {open && (
+        <div className="usage-popover" role="dialog" aria-label="Uso do modelo">
+          <h2>Uso do modelo</h2>
+          <p className="usage-model">
+            {modelName}
+            {modelId ? ` · ${modelId}` : ''}
+          </p>
+          {usage ? (
+            <>
+              <div className="usage-row">
+                <span>Contexto</span>
+                <strong>{formatTokens(usage.promptTokens)}</strong>
+              </div>
+              <div className="usage-row">
+                <span>Última resposta</span>
+                <strong>{formatTokens(usage.completionTokens)}</strong>
+              </div>
+              <div className="usage-row">
+                <span>Gerado na conversa</span>
+                <strong>{formatTokens(usage.generatedTokens)}</strong>
+              </div>
+              {usage.contextTokens ? (
+                <p className="usage-context">
+                  {Math.round(ratio * 100)}% da janela de {formatTokens(usage.contextTokens)} tokens
+                </p>
+              ) : (
+                <p className="usage-context">O servidor não informou o tamanho da janela.</p>
+              )}
+            </>
+          ) : (
+            <p className="usage-context">Nenhum uso ainda. Envie uma mensagem para contar os tokens.</p>
+          )}
+        </div>
+      )}
+    </>
+  )
 }
 
 /** Categoria da conversa. Conversas antigas (sem kind) são 'dev' se têm pasta. */
@@ -127,6 +266,26 @@ function storageKeyFor(userId: string): string {
   return `osvacode.conversations.${userId}`
 }
 
+function loadDesignsFor(userId: string): DesignDoc[] {
+  try {
+    const raw = localStorage.getItem(`osvacode.designs.${userId}`)
+    const parsed = raw ? (JSON.parse(raw) as DesignDoc[]) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function designReply(text: string, applied: boolean, problem: string): string {
+  if (problem) return problem.slice(0, 280)
+  const clean = text
+    .replace(/```design[\s\S]*?```/g, '')
+    .replace(/\{[\s\S]*"frames"[\s\S]*\}/g, '')
+    .trim()
+  if (applied && (!clean || clean.length > 220)) return 'Desenho atualizado no canvas.'
+  return clean.slice(0, 280)
+}
+
 function loadConversationsFor(userId: string): Conversation[] {
   try {
     let data = localStorage.getItem(storageKeyFor(userId))
@@ -163,11 +322,29 @@ export default function App(): JSX.Element {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
   // aba ativa do menu: 'chat' (conversa simples) ou 'dev' (com pasta de trabalho)
   const [tab, setTab] = useState<ConversationKind>('chat')
+  const [section, setSection] = useState<'chats' | 'automations' | 'design'>('chats')
+  const [designs, setDesigns] = useState<DesignDoc[]>([])
+  const [designId, setDesignId] = useState<string | null>(null)
+  const [designStatus, setDesignStatus] = useState('')
+  const [hookPort, setHookPort] = useState(AUTOMATION_HOOK_PORT)
+  const [usageOpen, setUsageOpen] = useState(false)
+  const usageRef = useRef<HTMLDivElement>(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const addRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!usageOpen && !addOpen) return
+    const close = (event: MouseEvent): void => {
+      const target = event.target as Node
+      if (usageOpen && !usageRef.current?.contains(target)) setUsageOpen(false)
+      if (addOpen && !addRef.current?.contains(target)) setAddOpen(false)
+    }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [usageOpen, addOpen])
   const [mode, setMode] = useState<'edit' | 'propose'>('edit')
-  const [attachments, setAttachments] = useState<File[]>([])
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([])
   const [isRecording, setIsRecording] = useState(false)
-  
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const recognitionRef = useRef<any>(null)
 
@@ -176,6 +353,11 @@ export default function App(): JSX.Element {
   const chatRequestId = useRef<string | null>(null)
   // requestId do chat -> conversa que está recebendo os tokens
   const chatTargets = useRef(new Map<string, string>())
+  const designTargets = useRef(new Map<string, string>())
+  const designsRef = useRef<DesignDoc[]>([])
+  const designText = useRef('')
+  const designApplied = useRef(false)
+  const persistDesignsRef = useRef<(next: DesignDoc[]) => void>(() => {})
   // espelhos para acesso dentro de callbacks de eventos
   const conversationsRef = useRef<Conversation[]>([])
   const settingsRef = useRef<AppSettings | null>(null)
@@ -199,8 +381,51 @@ export default function App(): JSX.Element {
   // No Chat, dá para escrever sem conversa aberta: o envio cria uma nova.
   const composerEnabled = (tab === 'chat' && !active) || activeReady
 
+  // ---------- comandos de barra (/ação e /skill) ----------
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
+  const [slashIndex, setSlashIndex] = useState(0)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const commandsFolder = active?.folder ?? null
+
+  const refreshSlashCommands = useCallback(() => {
+    void window.api
+      .projectCommands(commandsFolder)
+      .then(setSlashCommands)
+      .catch(() => setSlashCommands([]))
+  }, [commandsFolder])
+
+  // recarrega ao trocar de pasta e ao fechar o painel do projeto (ações/skills editadas)
+  useEffect(() => {
+    if (!projectPanelOpen) refreshSlashCommands()
+  }, [refreshSlashCommands, projectPanelOpen])
+
+  const slash = composerEnabled && !slashDismissed ? slashQuery(input) : null
+  const slashItems = slash ? filterSlashCommands(slashCommands, slash.query) : []
+  const slashOpen = slashItems.length > 0
+
+  useEffect(() => {
+    setSlashIndex(0)
+  }, [slash?.query, slash?.prefix])
+
+  const pickSlashCommand = useCallback(
+    (command: SlashCommand) => {
+      const current = slashQuery(input)
+      setInput(`${current?.prefix ?? ''}/${command.name} `)
+      composerRef.current?.focus()
+    },
+    [input]
+  )
+
+  useEffect(() => {
+    const el = composerRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [input])
+
   useEffect(() => {
     void window.api.getSettings().then(setSettings)
+    void window.api.hookPort().then(setHookPort)
     void window.api.getSession().then((s) => setSession(s))
     void window.api.getMcpStatus().then(setMcpStatus)
 
@@ -235,6 +460,10 @@ export default function App(): JSX.Element {
   useEffect(() => {
     if (!session) return
     setConversations(loadConversationsFor(session.user.id))
+    const storedDesigns = loadDesignsFor(session.user.id)
+    designsRef.current = storedDesigns
+    setDesigns(storedDesigns)
+    setDesignId(null)
     conversationsOwner.current = session.user.id
     setActiveId(null)
     setRemoteChats([])
@@ -320,6 +549,18 @@ export default function App(): JSX.Element {
     []
   )
 
+  persistDesignsRef.current = (next) => {
+    designsRef.current = next
+    setDesigns(next)
+    const userId = conversationsOwner.current
+    if (!userId) return
+    try {
+      localStorage.setItem(`osvacode.designs.${userId}`, JSON.stringify(next))
+    } catch {
+      // o desenho continua nesta sessão
+    }
+  }
+
   useEffect(() => {
     const unsubscribe = window.api.onChatEvent(({ requestId, event }) => {
       const simplifyTarget = simplifyTargets.current.get(requestId)
@@ -345,8 +586,79 @@ export default function App(): JSX.Element {
         return
       }
 
+      const openDesignId = designTargets.current.get(requestId)
+      if (openDesignId) {
+        if (event.type === 'token') designText.current += event.text
+        if (event.type === 'design-update') {
+          designApplied.current = true
+          persistDesignsRef.current(
+            designsRef.current.map((item) =>
+              item.id === event.design.id
+                ? {
+                    ...item,
+                    title: event.design.title || item.title,
+                    kind: event.design.kind,
+                    frames: event.design.frames,
+                    updatedAt: Date.now()
+                  }
+                : item
+            )
+          )
+          setDesignStatus('Canvas atualizado.')
+        }
+        if (event.type === 'tool-start' && event.toolName === 'design_canvas') {
+          setDesignStatus('Desenhando no canvas…')
+        }
+        if (event.type === 'error') setDesignStatus(event.message)
+        if (event.type === 'done' || event.type === 'error' || event.type === 'interrupted') {
+          designTargets.current.delete(requestId)
+          const problem = event.type === 'done' ? '' : event.message
+          const reply = designReply(designText.current, designApplied.current, problem)
+          if (reply) {
+            persistDesignsRef.current(
+              designsRef.current.map((item) =>
+                item.id === openDesignId
+                  ? {
+                      ...item,
+                      notes: [...item.notes, { role: 'assistant' as const, content: reply }].slice(-12),
+                      updatedAt: Date.now()
+                    }
+                  : item
+              )
+            )
+          }
+          designText.current = ''
+          if (chatRequestId.current === requestId) {
+            chatRequestId.current = null
+            generatingConversation.current = null
+            setBusy(false)
+          }
+        }
+        return
+      }
+
       const conversationId = chatTargets.current.get(requestId)
       if (!conversationId) return
+
+      if (event.type === 'usage') {
+        setConversations((prev) =>
+          prev.map((conversation) => {
+            if (conversation.id !== conversationId) return conversation
+            const previous = conversation.usage
+            return {
+              ...conversation,
+              usage: {
+                promptTokens: event.usage.promptTokens,
+                completionTokens: event.usage.completionTokens,
+                totalTokens: event.usage.totalTokens,
+                contextTokens: event.usage.contextTokens,
+                generatedTokens: (previous?.generatedTokens ?? 0) + event.usage.completionTokens
+              }
+            }
+          })
+        )
+        return
+      }
 
       if (event.type === 'file-change') {
         setFileChanges((prev) => {
@@ -458,14 +770,18 @@ export default function App(): JSX.Element {
             return next.map((m) =>
               m.kind === 'assistant' && m.streaming ? { ...m, streaming: false } : m
             )
+          case 'design-update':
+            return next
         }
       })
 
       if (event.type === 'done' || event.type === 'error' || event.type === 'interrupted') {
         chatTargets.current.delete(requestId)
-        chatRequestId.current = null
-        generatingConversation.current = null
-        setBusy(false)
+        if (chatRequestId.current === requestId) {
+          chatRequestId.current = null
+          generatingConversation.current = null
+          setBusy(false)
+        }
         if (event.type === 'done') {
           autoResumeCount.current = 0 // sucesso: zera as tentativas automáticas
           // adia para o estado da conversa terminar de atualizar antes de enviar
@@ -511,6 +827,21 @@ export default function App(): JSX.Element {
     if (session && tab === 'chat' && !activeId) composerRef.current?.focus()
   }, [session, tab, activeId])
 
+  const addAttachment = useCallback(async (kind: 'image' | 'file' | 'folder') => {
+    setAddOpen(false)
+    const picked = await window.api.pickAttachment(kind)
+    if (!picked?.length) return
+    const next: DraftAttachment[] = []
+    for (const item of picked) {
+      if (item.kind === 'image') {
+        next.push({ ...item, id: crypto.randomUUID(), dataUrl: await shrinkImage(item.dataUrl) })
+      } else {
+        next.push({ ...item, id: crypto.randomUUID() })
+      }
+    }
+    setAttachments((prev) => [...prev, ...next])
+  }, [])
+
   const send = useCallback(async () => {
     const baseText = input.trim()
     if ((!baseText && attachments.length === 0) || busy) return
@@ -522,19 +853,22 @@ export default function App(): JSX.Element {
     autoResumeCount.current = 0 // nova mensagem: reinicia o ciclo de retomada automática
 
     let fullText = baseText
-    if (attachments.length > 0) {
-      fullText += '\n\n'
-      for (const file of attachments) {
-        try {
-          const content = await file.text()
-          fullText += `--- Arquivo Anexado: ${file.name} ---\n\`\`\`\n${content}\n\`\`\`\n\n`
-        } catch (err) {
-          console.error('Falha ao ler arquivo', file)
-        }
+    const images: { dataUrl: string }[] = []
+    for (const item of attachments) {
+      if (item.kind === 'image') {
+        images.push({ dataUrl: item.dataUrl })
+        fullText += `${fullText ? '\n' : ''}[Imagem anexada: ${item.name}]`
+      } else {
+        fullText += `${fullText ? '\n\n' : ''}${item.text}`
       }
     }
 
-    const userMessage: UiMessage = { kind: 'user', id: crypto.randomUUID(), content: fullText }
+    const userMessage: UiMessage = {
+      kind: 'user',
+      id: crypto.randomUUID(),
+      content: fullText,
+      ...(images.length > 0 ? { images } : {})
+    }
     const titleSource = baseText || attachments.map((file) => file.name).join(', ')
     const conversationId = active?.id ?? crypto.randomUUID()
     const priorMessages = active?.messages ?? []
@@ -569,14 +903,7 @@ export default function App(): JSX.Element {
     })
     if (!active) setActiveId(conversationId)
 
-    const history: ChatMessage[] = [
-      ...priorMessages
-        .filter((m): m is Extract<UiMessage, { kind: 'user' | 'assistant' }> =>
-          m.kind === 'user' || m.kind === 'assistant'
-        )
-        .map((m) => ({ role: m.kind, content: m.content })),
-      { role: 'user' as const, content: fullText }
-    ]
+    const history = toChatMessages([...priorMessages, userMessage])
 
     setInput('')
     setAttachments([])
@@ -622,11 +949,7 @@ export default function App(): JSX.Element {
     const trimmed = active.messages.slice(0, lastUserIdx + 1)
     patchConversation(active.id, () => trimmed, false)
 
-    const history: ChatMessage[] = trimmed
-      .filter((m): m is Extract<UiMessage, { kind: 'user' | 'assistant' }> =>
-        m.kind === 'user' || m.kind === 'assistant'
-      )
-      .map((m) => ({ role: m.kind, content: m.content }))
+    const history = toChatMessages(trimmed)
 
     setBusy(true)
     const requestId = crypto.randomUUID()
@@ -760,6 +1083,194 @@ export default function App(): JSX.Element {
     [activeId]
   )
 
+  const persistSettings = useCallback(
+    (next: AppSettings) => {
+      setSettings(next)
+      void window.api.saveSettings(next).then(setMcpStatus)
+    },
+    []
+  )
+
+  const createDesign = useCallback((kind: DesignKind) => {
+    const label = DESIGN_KINDS.find((item) => item.kind === kind)?.label ?? 'Design'
+    const doc: DesignDoc = {
+      id: crypto.randomUUID(),
+      title: label,
+      kind,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      frames: [],
+      notes: []
+    }
+    persistDesignsRef.current([doc, ...designsRef.current])
+    setDesignId(doc.id)
+    setDesignStatus('')
+    setSection('design')
+  }, [])
+
+  const askDesign = useCallback(
+    (id: string, prompt: string) => {
+      if (busy) return
+      const design = designsRef.current.find((item) => item.id === id)
+      if (!design || !prompt.trim()) return
+      const withNote = designsRef.current.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              notes: [...item.notes, { role: 'user' as const, content: prompt.trim() }].slice(-12),
+              updatedAt: Date.now()
+            }
+          : item
+      )
+      persistDesignsRef.current(withNote)
+      const snapshot = JSON.stringify({
+        title: design.title,
+        kind: design.kind,
+        frames: design.frames
+      }).slice(0, 12000)
+      const history = [
+        ...design.notes.slice(-6).map((item) => ({ role: item.role, content: item.content })),
+        {
+          role: 'user' as const,
+          content: design.frames.length
+            ? `${prompt.trim()}\n\nEstado atual do canvas:\n${snapshot}`
+            : prompt.trim()
+        }
+      ]
+      const requestId = crypto.randomUUID()
+      designTargets.current.set(requestId, id)
+      designText.current = ''
+      designApplied.current = false
+      chatRequestId.current = requestId
+      setBusy(true)
+      setDesignStatus('Pedindo o desenho ao modelo…')
+      void window.api.sendChat(requestId, history, {
+        folder: design.folder,
+        mode: 'propose',
+        design: { id: design.id, kind: design.kind, title: design.title }
+      })
+    },
+    [busy]
+  )
+
+  const saveAutomations = useCallback(
+    (automations: Automation[]) => {
+      if (!settings) return
+      persistSettings({ ...settings, automations })
+    },
+    [settings, persistSettings]
+  )
+
+  const runAutomation = useCallback(
+    async (automation: Automation, scheduleTriggerId?: string, context?: string) => {
+      if (busy || automation.enabled === false || !automation.prompt.trim()) return
+      let folder: string | null = null
+      if (automation.kind === 'dev') {
+        if (scheduleTriggerId && !automation.folder) return
+        const picked = automation.folder || (await window.api.pickFolder())
+        if (!picked) return
+        folder = folderKey(picked)
+      }
+      const id = crypto.randomUUID()
+      const text = context ? `${automation.prompt.trim()}\n\n${context}` : automation.prompt.trim()
+      const background = Boolean(scheduleTriggerId && !context)
+      const userMessage: UiMessage = { kind: 'user', id: crypto.randomUUID(), content: text }
+      if (!background) {
+        setTab(automation.kind)
+        setSection('chats')
+      }
+      setConversations((prev) => [
+        {
+          id,
+          title: titleFromContext(text),
+          autoTitle: false,
+          messages: [userMessage],
+          updatedAt: Date.now(),
+          kind: automation.kind,
+          ...(folder ? { folder } : {})
+        },
+        ...prev
+      ])
+      if (!background) setActiveId(id)
+      setBusy(true)
+      const requestId = crypto.randomUUID()
+      chatRequestId.current = requestId
+      chatTargets.current.set(requestId, id)
+      generatingConversation.current = id
+      void window.api.sendChat(requestId, [{ role: 'user', content: text }], {
+        folder: folder ?? undefined,
+        mode,
+        providerId: automation.providerId || undefined
+      })
+      const current = settingsRef.current
+      if (current) {
+        const automations = (current.automations ?? []).map((item) =>
+          item.id === automation.id
+            ? {
+                ...item,
+                runs: [{ at: Date.now(), conversationId: id }, ...(item.runs ?? [])].slice(0, 40),
+                triggers: (item.triggers ?? []).map((trigger) =>
+                  trigger.id === scheduleTriggerId ? { ...trigger, lastFiredAt: Date.now() } : trigger
+                )
+              }
+            : item
+        )
+        persistSettings({ ...current, automations })
+      }
+    },
+    [busy, mode, persistSettings]
+  )
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (busy) return
+      const current = settingsRef.current
+      if (!current) return
+      const now = Date.now()
+      for (const automation of current.automations ?? []) {
+        if (automation.enabled === false || !automation.prompt.trim()) continue
+        if (automation.kind === 'dev' && !automation.folder) continue
+        const trigger = (automation.triggers ?? []).find(
+          (item) => item.kind === 'schedule' && scheduleIsDue(item, now)
+        )
+        if (!trigger) continue
+        void runAutomation(automation, trigger.id)
+        break
+      }
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [busy, runAutomation])
+
+  const pendingHooks = useRef<AutomationHookEvent[]>([])
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+
+  const drainHooks = useCallback(() => {
+    if (busyRef.current) return
+    const current = settingsRef.current
+    while (pendingHooks.current.length > 0) {
+      const event = pendingHooks.current[0]
+      const automation = current?.automations?.find((item) => item.id === event.automationId)
+      pendingHooks.current.shift()
+      if (!automation || automation.enabled === false || !automation.prompt.trim()) continue
+      if (automation.kind === 'dev' && !automation.folder) continue
+      const label = HOOK_SOURCES.find((item) => item.source === event.source)?.label ?? event.source
+      void runAutomation(automation, event.triggerId, `--- Evento ${label} ---\n${event.summary}`)
+      return
+    }
+  }, [runAutomation])
+
+  useEffect(() => {
+    return window.api.onAutomationHook((event) => {
+      pendingHooks.current = [...pendingHooks.current, event].slice(-8)
+      drainHooks()
+    })
+  }, [drainHooks])
+
+  useEffect(() => {
+    if (!busy) drainHooks()
+  }, [busy, drainHooks])
+
   const changeProvider = useCallback(
     (providerId: string) => {
       if (!settings) return
@@ -809,17 +1320,83 @@ export default function App(): JSX.Element {
           onTabChange={changeTab}
           remoteChats={remoteChats}
           onImportRemote={(remote) => void importRemoteChat(remote)}
-          onSelect={setActiveId}
-          onNew={() => void startNewConversation()}
+          onSelect={(id) => {
+            setActiveId(id)
+            setSection('chats')
+          }}
+          onNew={() => {
+            setSection('chats')
+            void startNewConversation()
+          }}
           onDelete={deleteConversation}
           onChangeProvider={changeProvider}
           onOpenSettings={() => setSettingsOpen(true)}
+          section={section}
+          onSectionChange={setSection}
         />
       )}
 
       <main className="main">
         <div className="chat-column">
-        {active && (
+        {section === 'design' ? (
+          <DesignPanel
+            designs={designs}
+            activeId={designId}
+            busy={busy}
+            status={designStatus}
+            onOpen={(id) => {
+              setDesignId(id)
+              setDesignStatus('')
+            }}
+            onCreate={createDesign}
+            onDelete={(id) => {
+              persistDesignsRef.current(designsRef.current.filter((item) => item.id !== id))
+              if (designId === id) setDesignId(null)
+            }}
+            onRename={(id, title) => {
+              persistDesignsRef.current(
+                designsRef.current.map((item) => (item.id === id ? { ...item, title, updatedAt: Date.now() } : item))
+              )
+            }}
+            onAsk={(id, prompt) => askDesign(id, prompt)}
+            onPickFolder={(id) => {
+              void window.api.pickFolder().then((folder) => {
+                if (!folder) return
+                persistDesignsRef.current(
+                  designsRef.current.map((item) =>
+                    item.id === id ? { ...item, folder: folderKey(folder), updatedAt: Date.now() } : item
+                  )
+                )
+              })
+            }}
+            onStop={stop}
+          />
+        ) : section === 'automations' && settings ? (
+          <AutomationsPanel
+            automations={settings.automations ?? []}
+            providers={settings.providers}
+            activeProviderId={settings.activeProviderId}
+            mcpStatus={mcpStatus}
+            userName={session.user.name}
+            hookPort={hookPort}
+            busy={busy}
+            onSave={(automation) => {
+              const next = {
+                ...automation,
+                ...(automation.folder ? { folder: folderKey(automation.folder) } : {})
+              }
+              const list = settings.automations ?? []
+              saveAutomations(
+                list.some((item) => item.id === next.id)
+                  ? list.map((item) => (item.id === next.id ? next : item))
+                  : [next, ...list]
+              )
+            }}
+            onDelete={(id) => saveAutomations((settings.automations ?? []).filter((item) => item.id !== id))}
+            onRun={(item) => void runAutomation(item)}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : active && (
           <div className="chat-header">
             <span className="chat-title">{active.title}</span>
             <div className="chat-header-actions">
@@ -890,6 +1467,8 @@ export default function App(): JSX.Element {
             </div>
           </div>
         )}
+        {section === 'chats' && (
+        <>
         <div className="chat" ref={scrollRef}>
           {messages.length === 0 && (
             <div className="empty-state">
@@ -984,126 +1563,233 @@ export default function App(): JSX.Element {
         </div>
 
         <footer className="composer-area">
-          <div className="composer-toolbar">
-            {activeKind === 'dev' && (
-              active?.folder ? (
-                <div className="composer-folder" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Folder size={12} /> {shortPath(active.folder)}
-                </div>
-              ) : (
-                <div className="composer-folder warn" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <AlertTriangle size={12} /> Defina uma pasta de trabalho no cabeçalho para conversar.
-                </div>
-              )
-            )}
-          </div>
-
-          {attachments.length > 0 && (
-            <div className="attachments-list">
-              {attachments.map((f, i) => (
-                <span key={i} className="attachment-chip">
-                  📄 {f.name}
-                  <button onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}><X size={14} /></button>
-                </span>
-              ))}
-            </div>
-          )}
+          {(() => {
+            const changes = activeId ? fileChanges[activeId] ?? [] : []
+            const additions = changes.reduce((sum, change) => sum + change.additions, 0)
+            const deletions = changes.reduce((sum, change) => sum + change.deletions, 0)
+            const showChips =
+              attachments.length > 0 || changes.length > 0 || (activeKind === 'dev' && !active?.folder)
+            if (!showChips) return null
+            return (
+              <div className="composer-chips">
+                {activeKind === 'dev' && !active?.folder && (
+                  <button type="button" className="composer-chip warn" onClick={() => void changeActiveFolder()}>
+                    <AlertTriangle size={13} /> Definir pasta
+                  </button>
+                )}
+                {changes.length > 0 && (
+                  <button
+                    type="button"
+                    className="composer-chip"
+                    onClick={() => {
+                      setWorkbenchTab('changes')
+                      setWorkbenchOpen(true)
+                    }}
+                  >
+                    Alterações
+                    <span className="add">+{additions}</span>
+                    <span className="del">-{deletions}</span>
+                  </button>
+                )}
+                {attachments.map((file) => (
+                  <span key={file.id} className="composer-chip">
+                    {file.kind === 'image' && <img className="composer-chip-thumb" src={file.dataUrl} alt="" />}
+                    {file.name}
+                    <button
+                      type="button"
+                      title="Remover anexo"
+                      onClick={() => setAttachments((prev) => prev.filter((item) => item.id !== file.id))}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )
+          })()}
 
           <div className="composer">
-            <input 
-              type="file" 
-              multiple 
-              style={{ display: 'none' }} 
-              ref={fileInputRef} 
+            {slashOpen && (
+              <SlashMenu
+                items={slashItems}
+                selectedIndex={Math.min(slashIndex, slashItems.length - 1)}
+                onHover={setSlashIndex}
+                onPick={pickSlashCommand}
+              />
+            )}
+            <div className="composer-add" ref={addRef}>
+              <button
+                type="button"
+                className={`composer-icon-btn ${addOpen ? 'open' : ''}`}
+                title="Adicionar"
+                onClick={() => setAddOpen((open) => !open)}
+                disabled={!composerEnabled || busy}
+              >
+                <Plus size={16} />
+              </button>
+              {addOpen && (
+                <div className="composer-add-menu" role="menu">
+                  <button type="button" onClick={() => void addAttachment('image')}>
+                    <Image size={15} /> Imagem
+                  </button>
+                  <button type="button" onClick={() => void addAttachment('file')}>
+                    <FileText size={15} /> Arquivo
+                  </button>
+                  <button type="button" onClick={() => void addAttachment('folder')}>
+                    <Folder size={15} /> Pasta
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <textarea
+              ref={composerRef}
+              value={input}
+              disabled={!composerEnabled}
+              rows={1}
+              placeholder={
+                !composerEnabled
+                  ? 'Crie uma conversa no menu para começar'
+                  : messages.length > 0
+                    ? 'Envie uma continuação  ·  / para ações e skills'
+                    : 'Envie uma mensagem  ·  / para ações e skills'
+              }
               onChange={(e) => {
-                if (e.target.files) {
-                  setAttachments(prev => [...prev, ...Array.from(e.target.files!)])
+                setInput(e.target.value)
+                setSlashDismissed(false)
+              }}
+              onKeyDown={(e) => {
+                if (slashOpen) {
+                  const count = slashItems.length
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setSlashIndex((i) => (i + 1) % count)
+                    return
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setSlashIndex((i) => (i - 1 + count) % count)
+                    return
+                  }
+                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                    e.preventDefault()
+                    pickSlashCommand(slashItems[Math.min(slashIndex, count - 1)])
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setSlashDismissed(true)
+                    return
+                  }
                 }
-                e.target.value = ''
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  send()
+                } else if (e.key === 'ArrowUp' && input === '') {
+                  e.preventDefault()
+                  const userMsgs = active?.messages.filter((m) => m.kind === 'user') || []
+                  if (userMsgs.length > 0) setInput(userMsgs[userMsgs.length - 1].content)
+                }
               }}
             />
-            
-            <div className="composer-input-col">
-              <textarea
-                ref={composerRef}
-                value={input}
-                disabled={!composerEnabled}
-                placeholder={
-                  active
-                    ? 'Escreva ou dite sua mensagem… (Enter envia)'
-                    : tab === 'chat'
-                      ? 'Escreva para começar… (Enter cria a conversa e envia)'
-                      : 'Crie uma nova conversa no menu lateral para começar'
-                }
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    send()
-                  } else if (e.key === 'ArrowUp' && input === '') {
-                    e.preventDefault()
-                    const userMsgs = active?.messages.filter((m) => m.kind === 'user') || []
-                    if (userMsgs.length > 0) {
-                      setInput(userMsgs[userMsgs.length - 1].content)
-                    }
-                  }
-                }}
-                rows={2}
-              />
-              {activeKind === 'dev' && (
-                <div className="composer-under-input">
+
+            <div className="composer-right">
+              {settings && settings.providers.length > 0 && (
+                <label className="composer-model" title={activeProvider ? `${activeProvider.name} · ${activeProvider.model}` : 'Modelo'}>
+                  <span>{activeProvider?.name ?? 'Modelo'}</span>
+                  <ChevronDown size={14} />
                   <select
-                    className="mode-select"
+                    value={settings.activeProviderId ?? ''}
+                    onChange={(e) => changeProvider(e.target.value)}
+                    disabled={busy}
+                  >
+                    {settings.providers.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {busy ? (
+                <button type="button" className="composer-icon-btn stop-ready" title="Parar" onClick={stop}>
+                  <Square size={12} fill="currentColor" />
+                </button>
+              ) : (
+                <>
+                  {(input.trim() || attachments.length > 0) && (
+                    <button
+                      type="button"
+                      className="composer-icon-btn send-ready"
+                      title="Enviar"
+                      onClick={send}
+                      disabled={!composerEnabled}
+                    >
+                      <ArrowUp size={16} />
+                    </button>
+                  )}
+                  {(!input.trim() && attachments.length === 0) || isRecording ? (
+                    <button
+                      type="button"
+                      className={`composer-icon-btn ${isRecording ? 'recording' : ''}`}
+                      title="Gravar áudio"
+                      onClick={toggleRecording}
+                      disabled={!composerEnabled}
+                    >
+                      <Mic size={15} />
+                    </button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="composer-meta">
+            <div className="composer-meta-left">
+              {activeKind === 'dev' && (
+                <button
+                  type="button"
+                  className="composer-meta-btn"
+                  title={active?.folder ?? 'Definir a pasta de trabalho'}
+                  onClick={() => void changeActiveFolder()}
+                >
+                  <Folder size={13} />
+                  <span>{active?.folder ? folderLabel(active.folder) : 'Definir pasta'}</span>
+                  <ChevronDown size={13} />
+                </button>
+              )}
+              {activeKind === 'dev' && (
+                <label className="composer-meta-btn">
+                  <span>{mode === 'edit' ? 'Editar arquivos' : 'Apenas propor'}</span>
+                  <ChevronDown size={13} />
+                  <select
                     value={mode}
                     onChange={(e) => setMode(e.target.value as 'edit' | 'propose')}
                     disabled={busy}
                   >
-                    <option value="edit">Editar Arquivos</option>
-                    <option value="propose">Apenas Propor</option>
+                    <option value="edit">Editar arquivos</option>
+                    <option value="propose">Apenas propor</option>
                   </select>
-                </div>
+                </label>
               )}
+              {activeKind !== 'dev' && <span className="composer-meta-quiet">Chat</span>}
             </div>
-
-            <div className="composer-actions-col">
-              {busy ? (
-                <button className="stop" onClick={stop} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Square size={14} fill="currentColor" /> Parar
-                </button>
-              ) : (
-                <button
-                  className="send"
-                  onClick={send}
-                  disabled={(!input.trim() && attachments.length === 0) || !composerEnabled}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  Enviar <Send size={14} />
-                </button>
-              )}
-
-              <div className="composer-media-actions">
-                <button
-                  className="attach-btn"
-                  title="Anexar arquivos de texto"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!composerEnabled || busy}
-                >
-                  <Paperclip size={18} />
-                </button>
-                <button
-                  className={`mic-btn ${isRecording ? 'recording' : ''}`}
-                  title="Gravar áudio"
-                  onClick={toggleRecording}
-                  disabled={!composerEnabled || busy}
-                >
-                  <Mic size={18} />
-                </button>
-              </div>
+            <div className="composer-usage" ref={usageRef}>
+              <UsageOrb
+                usage={active?.usage}
+                open={usageOpen}
+                modelName={activeProvider?.name ?? 'Modelo'}
+                modelId={activeProvider?.model ?? ''}
+                onToggle={() => setUsageOpen((open) => !open)}
+              />
             </div>
           </div>
         </footer>
+        </>
+        )}
         </div>
-        {workbenchOpen && activeId && (
+        {section === 'chats' && workbenchOpen && activeId && (
           <Workbench
             changes={fileChanges[activeId] ?? []}
             artifacts={artifacts[activeId] ?? []}

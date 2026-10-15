@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserState, ChatEventPayload } from '../shared/types'
+import type { AutomationHookEvent, BrowserState, ChatEventPayload } from '../shared/types'
 import type { OsvaCodeApi } from '../shared/api'
 
 const api: OsvaCodeApi = {
@@ -8,6 +8,7 @@ const api: OsvaCodeApi = {
   getMcpStatus: () => ipcRenderer.invoke('mcp:status'),
   listModels: (providerId) => ipcRenderer.invoke('models:list', providerId),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  pickAttachment: (kind) => ipcRenderer.invoke('dialog:pickAttachment', kind),
   sendChat: (requestId, history, options) =>
     ipcRenderer.invoke('chat:send', requestId, history, options),
   simplify: (requestId, text) => ipcRenderer.invoke('chat:simplify', requestId, text),
@@ -28,6 +29,10 @@ const api: OsvaCodeApi = {
   projectSaveSkill: (folder, name, content) =>
     ipcRenderer.invoke('project:save-skill', folder, name, content),
   projectDeleteSkill: (folder, name) => ipcRenderer.invoke('project:delete-skill', folder, name),
+  projectSaveAction: (folder, name, content) =>
+    ipcRenderer.invoke('project:save-action', folder, name, content),
+  projectDeleteAction: (folder, name) => ipcRenderer.invoke('project:delete-action', folder, name),
+  projectCommands: (folder) => ipcRenderer.invoke('project:commands', folder),
   getSession: () => ipcRenderer.invoke('auth:session'),
   login: (email, password, serverUrl) =>
     ipcRenderer.invoke('auth:login', email, password, serverUrl),
@@ -40,6 +45,13 @@ const api: OsvaCodeApi = {
       callback(payload)
     ipcRenderer.on('chat:event', listener)
     return () => ipcRenderer.removeListener('chat:event', listener)
+  },
+  hookPort: () => ipcRenderer.invoke('hooks:port'),
+  onAutomationHook: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: AutomationHookEvent): void =>
+      callback(payload)
+    ipcRenderer.on('automation:hook', listener)
+    return () => ipcRenderer.removeListener('automation:hook', listener)
   },
   navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
   openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),

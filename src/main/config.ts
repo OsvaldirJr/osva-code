@@ -39,7 +39,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     apiKey: '',
     enabled: false
   },
-  teams: []
+  teams: [],
+  automations: []
 }
 
 function defaultUserName(): string {
@@ -62,7 +63,8 @@ export function loadSettings(): AppSettings {
       return {
         ...DEFAULT_SETTINGS,
         ...raw,
-        teams: Array.isArray(raw.teams) ? raw.teams : []
+        teams: Array.isArray(raw.teams) ? raw.teams : [],
+        automations: Array.isArray(raw.automations) ? raw.automations : []
       }
     }
   } catch (err) {
