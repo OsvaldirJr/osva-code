@@ -30,6 +30,10 @@ if pid == 0:
     os.close(master_fd)
     os.setsid()
     fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+    try:
+        os.tcsetpgrp(slave_fd, os.getpgrp())
+    except OSError:
+        pass
     os.dup2(slave_fd, 0)
     os.dup2(slave_fd, 1)
     os.dup2(slave_fd, 2)
@@ -38,7 +42,7 @@ if pid == 0:
     if mode == "interactive":
         argv = [shell, "-ic", command] if command else [shell, "-i"]
     else:
-        argv = [shell, "-ic", command] if os.path.basename(shell) in ("zsh", "bash") else [shell, "-c", command]
+        argv = [shell, "-c", command]
     os.execvp(shell, argv)
 
 os.close(slave_fd)
@@ -399,6 +403,7 @@ export function startTerminalSession(input: {
   rows?: number
   initialInput?: string
   restart?: boolean
+  adoptSessionId?: string
   config?: TerminalCliConfig
 }): TerminalSessionInfo {
   const previous = sessions.get(input.sessionId)
@@ -407,6 +412,24 @@ export function startTerminalSession(input: {
       sendTerminalLine(input.sessionId, input.initialInput)
     }
     return { ...previous.info }
+  }
+  if (!input.restart && input.adoptSessionId && input.adoptSessionId !== input.sessionId) {
+    const adopted = sessions.get(input.adoptSessionId)
+    if (adopted?.info.running) {
+      sessions.delete(input.adoptSessionId)
+      adopted.info = { ...adopted.info, sessionId: input.sessionId }
+      sessions.set(input.sessionId, adopted)
+      emitEvent({ sessionId: input.adoptSessionId, type: 'exit', code: 0 })
+      emitEvent({ sessionId: input.sessionId, type: 'status', session: { ...adopted.info } })
+      if (input.initialInput !== undefined) {
+        if (adopted.pendingInitialInput !== undefined) {
+          adopted.pendingInitialInput = input.initialInput
+        } else {
+          sendTerminalLine(input.sessionId, input.initialInput)
+        }
+      }
+      return { ...adopted.info }
+    }
   }
   if (previous?.info.running) {
     stopTerminalSession(input.sessionId)
@@ -474,7 +497,7 @@ export function startTerminalSession(input: {
   const pushText = (text: string): void => {
     if (!text) return
     appendHistory(session, text)
-    emitEvent({ sessionId: input.sessionId, type: 'data', data: text })
+    emitEvent({ sessionId: session.info.sessionId, type: 'data', data: text })
     if (session.pendingInitialInput !== undefined && !session.initialTimer) {
       const delay = input.target === 'shell' ? 150 : 650
       session.initialTimer = setTimeout(() => flushInitialInput(session), delay)
@@ -503,8 +526,8 @@ export function startTerminalSession(input: {
             exitCode: typeof msg.code === 'number' ? msg.code : 0
           }
           clearInitialTimers(session)
-          emitEvent({ sessionId: input.sessionId, type: 'status', session: { ...session.info } })
-          emitEvent({ sessionId: input.sessionId, type: 'exit', code: session.info.exitCode ?? 0 })
+          emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
+          emitEvent({ sessionId: session.info.sessionId, type: 'exit', code: session.info.exitCode ?? 0 })
         }
       } catch {
         // ignora linha malformada
@@ -522,9 +545,9 @@ export function startTerminalSession(input: {
     session.info = { ...session.info, running: false, exitCode: 1 }
     const msg = `\r\n\x1b[31mErro ao iniciar terminal: ${err.message}\x1b[0m\r\n`
     appendHistory(session, msg)
-    emitEvent({ sessionId: input.sessionId, type: 'data', data: msg })
-    emitEvent({ sessionId: input.sessionId, type: 'error', message: err.message })
-    emitEvent({ sessionId: input.sessionId, type: 'status', session: { ...session.info } })
+    emitEvent({ sessionId: session.info.sessionId, type: 'data', data: msg })
+    emitEvent({ sessionId: session.info.sessionId, type: 'error', message: err.message })
+    emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
   })
 
   child.on('close', (code) => {
@@ -533,8 +556,8 @@ export function startTerminalSession(input: {
       const tail = session.decoder.end()
       if (tail) pushText(tail)
       session.info = { ...session.info, running: false, exitCode: code }
-      emitEvent({ sessionId: input.sessionId, type: 'status', session: { ...session.info } })
-      emitEvent({ sessionId: input.sessionId, type: 'exit', code })
+      emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
+      emitEvent({ sessionId: session.info.sessionId, type: 'exit', code })
     }
   })
 

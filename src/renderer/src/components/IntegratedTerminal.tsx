@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { CornerDownLeft, FolderOpen, Play, RotateCw, Square, Trash2 } from 'lucide-react'
+import { CornerDownLeft, FolderOpen, MessageSquare, Play, RotateCw, Square, Trash2 } from 'lucide-react'
 import type { TerminalSessionInfo, TerminalTarget } from '../../../shared/types'
 
 const TARGETS: { id: TerminalTarget; label: string }[] = [
@@ -25,16 +25,22 @@ export function IntegratedTerminal({
   conversationKey,
   folder,
   target,
-  onTargetChange
+  onTargetChange,
+  hideInputBar,
+  onExitToChat
 }: {
   conversationKey: string
   folder?: string | null
   target: TerminalTarget
   onTargetChange: (target: TerminalTarget) => void
+  hideInputBar?: boolean
+  onExitToChat?: () => void
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const hideInputBarRef = useRef(hideInputBar)
+  hideInputBarRef.current = hideInputBar
   const [customCwd, setCustomCwd] = useState<string | null>(null)
   const [sessionsMap, setSessionsMap] = useState<Record<string, TerminalSessionInfo>>({})
   const [lineInput, setLineInput] = useState('')
@@ -108,6 +114,30 @@ export function IntegratedTerminal({
     termRef.current = term
     fitRef.current = fit
 
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && term.hasSelection()) {
+        const selected = term.getSelection()
+        if (selected && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(selected)
+        }
+        return false
+      }
+      if (event.metaKey && event.key.toLowerCase() === 'v') {
+        if (navigator.clipboard?.readText) {
+          void navigator.clipboard.readText().then((clip) => {
+            if (clip) void window.api.terminalWrite(sessionId, clip)
+          })
+        }
+        return false
+      }
+      if (event.shiftKey && event.key === 'Enter') {
+        void window.api.terminalWrite(sessionId, '\n')
+        return false
+      }
+      return true
+    })
+
     const fitAndResize = (): void => {
       if (!host.clientWidth || !host.clientHeight) return
       try {
@@ -119,6 +149,9 @@ export function IntegratedTerminal({
     }
 
     fitAndResize()
+    if (hideInputBarRef.current) {
+      requestAnimationFrame(() => term.focus())
+    }
     const observer = new ResizeObserver(fitAndResize)
     observer.observe(host)
 
@@ -147,6 +180,9 @@ export function IntegratedTerminal({
         term.write(res.buffer)
       }
       hydrated = true
+      if (hideInputBarRef.current) {
+        requestAnimationFrame(() => term.focus())
+      }
       if (!res.session) {
         void window.api
           .terminalStart({
@@ -297,63 +333,80 @@ export function IntegratedTerminal({
               <Square size={11} />
             </button>
           )}
+          {onExitToChat && (
+            <button
+              type="button"
+              className="terminal-chat-btn"
+              title="Voltar para as mensagens do chat"
+              onClick={onExitToChat}
+            >
+              <MessageSquare size={12} />
+              <span>Chat</span>
+            </button>
+          )}
         </div>
       </div>
 
       <div
         className="terminal-xterm-host"
         ref={hostRef}
+        tabIndex={-1}
+        onMouseDown={() => {
+          requestAnimationFrame(() => termRef.current?.focus())
+        }}
         onClick={() => termRef.current?.focus()}
       />
 
-      <form
-        className="terminal-input-bar"
-        onSubmit={(event) => {
-          event.preventDefault()
-          sendLine()
-        }}
-      >
-        <span className="terminal-input-prefix" title={`Enviando para ${targetLabel}`}>
-          {targetLabel} ›
-        </span>
-        <input
-          value={lineInput}
-          spellCheck={false}
-          placeholder={
-            target === 'claude'
-              ? 'Digite um comando ou pedido para o Claude…'
-              : target === 'copilot'
-                ? 'Digite um comando ou pedido para o Copilot…'
-                : 'Digite um comando para executar no terminal…'
-          }
-          onChange={(event) => {
-            setLineInput(event.target.value)
-            setHistoryCursor(-1)
+      {!hideInputBar && (
+        <form
+          className="terminal-input-bar"
+          onSubmit={(event) => {
+            event.preventDefault()
+            sendLine()
           }}
-          onKeyDown={(event) => {
-            if (event.key === 'ArrowUp' && cmdHistory.length > 0) {
-              event.preventDefault()
-              const next = Math.min(historyCursor + 1, cmdHistory.length - 1)
-              setHistoryCursor(next)
-              setLineInput(cmdHistory[next] ?? '')
-            } else if (event.key === 'ArrowDown') {
-              event.preventDefault()
-              if (historyCursor <= 0) {
-                setHistoryCursor(-1)
-                setLineInput('')
-              } else {
-                const next = historyCursor - 1
+        >
+          <span className="terminal-input-prefix" title={`Enviando para ${targetLabel}`}>
+            {targetLabel} ›
+          </span>
+          <input
+            value={lineInput}
+            spellCheck={false}
+            placeholder={
+              target === 'claude'
+                ? 'Digite um comando ou pedido para o Claude…'
+                : target === 'copilot'
+                  ? 'Digite um comando ou pedido para o Copilot…'
+                  : 'Digite um comando para executar no terminal…'
+            }
+            onChange={(event) => {
+              setLineInput(event.target.value)
+              setHistoryCursor(-1)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowUp' && cmdHistory.length > 0) {
+                event.preventDefault()
+                const next = Math.min(historyCursor + 1, cmdHistory.length - 1)
                 setHistoryCursor(next)
                 setLineInput(cmdHistory[next] ?? '')
+              } else if (event.key === 'ArrowDown') {
+                event.preventDefault()
+                if (historyCursor <= 0) {
+                  setHistoryCursor(-1)
+                  setLineInput('')
+                } else {
+                  const next = historyCursor - 1
+                  setHistoryCursor(next)
+                  setLineInput(cmdHistory[next] ?? '')
+                }
               }
-            }
-          }}
-        />
-        <button type="submit" title="Passar para o terminal (Enter)">
-          <CornerDownLeft size={13} />
-          <span>Enviar</span>
-        </button>
-      </form>
+            }}
+          />
+          <button type="submit" title="Passar para o terminal (Enter)">
+            <CornerDownLeft size={13} />
+            <span>Enviar</span>
+          </button>
+        </form>
+      )}
     </div>
   )
 }

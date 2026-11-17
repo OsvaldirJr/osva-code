@@ -136,6 +136,7 @@ export interface OsvaCodeApi {
     rows?: number
     initialInput?: string
     restart?: boolean
+    adoptSessionId?: string
   }) => Promise<TerminalSessionInfo>
   terminalWrite: (sessionId: string, data: string) => Promise<void>
   terminalSendLine: (sessionId: string, text: string) => Promise<void>
