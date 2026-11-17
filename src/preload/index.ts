@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AutomationHookEvent, BrowserState, ChatEventPayload, OpenCodeNotice } from '../shared/types'
+import type { AutomationHookEvent, BrowserState, ChatEventPayload, OpenCodeNotice, TerminalEvent } from '../shared/types'
 import type { OsvaCodeApi } from '../shared/api'
 
 const api: OsvaCodeApi = {
@@ -92,6 +92,19 @@ const api: OsvaCodeApi = {
     const listener = (_event: Electron.IpcRendererEvent, notice: OpenCodeNotice): void => callback(notice)
     ipcRenderer.on('opencode:event', listener)
     return () => ipcRenderer.removeListener('opencode:event', listener)
+  },
+  terminalTools: () => ipcRenderer.invoke('terminal:tools'),
+  terminalStart: (input) => ipcRenderer.invoke('terminal:start', input),
+  terminalWrite: (sessionId, data) => ipcRenderer.invoke('terminal:write', sessionId, data),
+  terminalSendLine: (sessionId, text) => ipcRenderer.invoke('terminal:send-line', sessionId, text),
+  terminalResize: (sessionId, cols, rows) => ipcRenderer.invoke('terminal:resize', sessionId, cols, rows),
+  terminalStop: (sessionId) => ipcRenderer.invoke('terminal:stop', sessionId),
+  terminalHistory: (sessionId) => ipcRenderer.invoke('terminal:history', sessionId),
+  terminalList: () => ipcRenderer.invoke('terminal:list'),
+  onTerminalEvent: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: TerminalEvent): void => callback(event)
+    ipcRenderer.on('terminal:event', listener)
+    return () => ipcRenderer.removeListener('terminal:event', listener)
   }
 }
 

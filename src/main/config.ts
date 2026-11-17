@@ -51,6 +51,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   plugins: {
     serverUrl: process.env.OSVACODE_PLUGINS_URL?.trim() || '',
     installed: []
+  },
+  terminal: {
+    claudeCommand: 'claude',
+    copilotCommand: '',
+    shellCommand: ''
   }
 }
 
@@ -88,6 +93,10 @@ export function loadSettings(): AppSettings {
               ? raw.plugins.serverUrl
               : (DEFAULT_SETTINGS.plugins?.serverUrl ?? ''),
           installed: Array.isArray(raw.plugins?.installed) ? raw.plugins.installed : []
+        },
+        terminal: {
+          ...DEFAULT_SETTINGS.terminal!,
+          ...(raw.terminal ?? {})
         }
       }
     }

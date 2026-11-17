@@ -55,6 +55,18 @@ import {
   type HunkEdit
 } from './workspaceActions'
 import { fetchPluginsCatalog, pluginMcpServers } from './plugins'
+import {
+  closeAllTerminals,
+  detectTerminalTools,
+  getTerminalHistory,
+  listTerminalSessions,
+  resizeTerminalSession,
+  sendTerminalLine,
+  setTerminalEventSink,
+  startTerminalSession,
+  stopTerminalSession,
+  writeTerminalSession
+} from './terminal'
 import { AUTOMATION_HOOK_PORT } from '../shared/types'
 import { designInstructions } from '../shared/design'
 import type { AutomationHookEvent, OpenCodeModel, OpenCodeNotice } from '../shared/types'
@@ -84,7 +96,8 @@ let settings: AppSettings = {
   activeFlowId: null,
   automations: [],
   opencode: { url: 'http://127.0.0.1:4096', username: 'opencode', password: '' },
-  plugins: { serverUrl: '', installed: [] }
+  plugins: { serverUrl: '', installed: [] },
+  terminal: { claudeCommand: 'claude', copilotCommand: '', shellCommand: '' }
 }
 const mcp = new McpManager()
 const activeRequests = new Map<string, AbortController>()
@@ -626,6 +639,44 @@ function registerIpc(): void {
   ipcMain.handle('browser:external', () => {
     browserOpenExternal()
   })
+
+  setTerminalEventSink((event) => {
+    mainWindow?.webContents.send('terminal:event', event)
+  })
+  ipcMain.handle('terminal:tools', () => detectTerminalTools())
+  ipcMain.handle(
+    'terminal:start',
+    (
+      _event,
+      input: {
+        sessionId: string
+        target: 'shell' | 'claude' | 'copilot'
+        cwd?: string | null
+        cols?: number
+        rows?: number
+        initialInput?: string
+        restart?: boolean
+      }
+    ) =>
+      startTerminalSession({
+        ...input,
+        config: settings.terminal
+      })
+  )
+  ipcMain.handle('terminal:write', (_event, sessionId: string, data: string) => {
+    writeTerminalSession(sessionId, data)
+  })
+  ipcMain.handle('terminal:send-line', (_event, sessionId: string, text: string) => {
+    sendTerminalLine(sessionId, text)
+  })
+  ipcMain.handle('terminal:resize', (_event, sessionId: string, cols: number, rows: number) => {
+    resizeTerminalSession(sessionId, cols, rows)
+  })
+  ipcMain.handle('terminal:stop', (_event, sessionId: string) => {
+    stopTerminalSession(sessionId)
+  })
+  ipcMain.handle('terminal:history', (_event, sessionId: string) => getTerminalHistory(sessionId))
+  ipcMain.handle('terminal:list', () => listTerminalSessions())
 }
 
 /**
@@ -762,5 +813,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   quitting = true
   stopTunnel()
+  closeAllTerminals()
   void mcp.closeAll()
 })

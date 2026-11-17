@@ -19,7 +19,11 @@ import type {
   SlashCommand,
   SyncMessage,
   SyncPushPayload,
-  WorkspaceDocument
+  WorkspaceDocument,
+  TerminalEvent,
+  TerminalSessionInfo,
+  TerminalTarget,
+  TerminalToolStatus
 } from './types'
 
 /** API exposta pelo preload em window.api. */
@@ -123,4 +127,21 @@ export interface OsvaCodeApi {
   opencodePermission: (sessionID: string, requestID: string, decision: 'once' | 'always' | 'reject') => Promise<void>
   opencodeDiff: (sessionID: string) => Promise<OpenCodeFileDiff[]>
   onOpenCode: (callback: (notice: OpenCodeNotice) => void) => () => void
+  terminalTools: () => Promise<TerminalToolStatus>
+  terminalStart: (input: {
+    sessionId: string
+    target: TerminalTarget
+    cwd?: string | null
+    cols?: number
+    rows?: number
+    initialInput?: string
+    restart?: boolean
+  }) => Promise<TerminalSessionInfo>
+  terminalWrite: (sessionId: string, data: string) => Promise<void>
+  terminalSendLine: (sessionId: string, text: string) => Promise<void>
+  terminalResize: (sessionId: string, cols: number, rows: number) => Promise<void>
+  terminalStop: (sessionId: string) => Promise<void>
+  terminalHistory: (sessionId: string) => Promise<{ session: TerminalSessionInfo | null; buffer: string }>
+  terminalList: () => Promise<TerminalSessionInfo[]>
+  onTerminalEvent: (callback: (event: TerminalEvent) => void) => () => void
 }

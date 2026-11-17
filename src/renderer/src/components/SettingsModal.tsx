@@ -1,10 +1,10 @@
-import { useState } from 'react'
-import type { AppSettings, McpServerConfig, McpServerStatus, ProviderConfig } from '../../../shared/types'
-import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users, Bot, Workflow } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import type { AppSettings, McpServerConfig, McpServerStatus, ProviderConfig, TerminalToolStatus } from '../../../shared/types'
+import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users, Bot, Workflow, TerminalSquare } from 'lucide-react'
 import { AgentTeamsPanel } from './AgentTeamsPanel'
 import { ModelFlowsPanel } from './ModelFlowsPanel'
 
-type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes' | 'fluxos' | 'opencode'
+type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes' | 'fluxos' | 'opencode' | 'terminal'
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
@@ -31,11 +31,22 @@ export function SettingsModal({
     plugins: {
       serverUrl: settings.plugins?.serverUrl ?? '',
       installed: settings.plugins?.installed ?? []
+    },
+    terminal: {
+      claudeCommand: settings.terminal?.claudeCommand ?? 'claude',
+      copilotCommand: settings.terminal?.copilotCommand ?? '',
+      shellCommand: settings.terminal?.shellCommand ?? ''
     }
   }))
   const [tab, setTab] = useState<Tab>('modelos')
   const [saving, setSaving] = useState(false)
   const [modelSuggestions, setModelSuggestions] = useState<Record<string, string[]>>({})
+  const [terminalTools, setTerminalTools] = useState<TerminalToolStatus | null>(null)
+
+  useEffect(() => {
+    if (tab !== 'terminal') return
+    void window.api.terminalTools().then(setTerminalTools).catch(() => setTerminalTools(null))
+  }, [tab])
 
   const updateProvider = (id: string, patch: Partial<ProviderConfig>): void => {
     setDraft((d) => ({
@@ -170,6 +181,13 @@ export function SettingsModal({
             style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
             <Bot size={14} /> OpenCode
+          </button>
+          <button
+            className={tab === 'terminal' ? 'active' : ''}
+            onClick={() => setTab('terminal')}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <TerminalSquare size={14} /> Terminal
           </button>
         </nav>
 
@@ -528,6 +546,81 @@ export function SettingsModal({
                     setDraft((current) => ({
                       ...current,
                       opencode: { ...current.opencode, password: e.target.value }
+                    }))
+                  }
+                />
+              </label>
+            </div>
+          )}
+
+          {tab === 'terminal' && (
+            <div className="card">
+              <p className="help">
+                Configure os comandos usados no terminal integrado ao escolher Claude, Copilot ou Shell.
+                Se deixar em branco, o app usa o comando padrão detectado no sistema.
+              </p>
+              {terminalTools && (
+                <div className="terminal-tools-status">
+                  <span className={`status ${terminalTools.claude ? 'ok' : 'err'}`}>
+                    ● Claude CLI: {terminalTools.claude ?? 'não encontrado no PATH'}
+                  </span>
+                  <span className={`status ${terminalTools.copilot || terminalTools.gh ? 'ok' : 'err'}`}>
+                    ● Copilot CLI:{' '}
+                    {terminalTools.copilot
+                      ? terminalTools.copilot
+                      : terminalTools.gh
+                        ? `via gh copilot (${terminalTools.gh})`
+                        : 'não encontrado no PATH'}
+                  </span>
+                </div>
+              )}
+              <label>
+                Comando do Claude
+                <input
+                  value={draft.terminal?.claudeCommand ?? 'claude'}
+                  placeholder="claude"
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      terminal: {
+                        claudeCommand: e.target.value,
+                        copilotCommand: current.terminal?.copilotCommand ?? '',
+                        shellCommand: current.terminal?.shellCommand ?? ''
+                      }
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Comando do Copilot (vazio = detecta copilot ou gh copilot)
+                <input
+                  value={draft.terminal?.copilotCommand ?? ''}
+                  placeholder="copilot ou gh copilot"
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      terminal: {
+                        claudeCommand: current.terminal?.claudeCommand ?? 'claude',
+                        copilotCommand: e.target.value,
+                        shellCommand: current.terminal?.shellCommand ?? ''
+                      }
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Shell padrão (vazio = shell do sistema)
+                <input
+                  value={draft.terminal?.shellCommand ?? ''}
+                  placeholder="/bin/zsh"
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      terminal: {
+                        claudeCommand: current.terminal?.claudeCommand ?? 'claude',
+                        copilotCommand: current.terminal?.copilotCommand ?? '',
+                        shellCommand: e.target.value
+                      }
                     }))
                   }
                 />
