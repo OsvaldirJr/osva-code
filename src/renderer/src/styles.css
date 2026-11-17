@@ -3904,3 +3904,232 @@ button:active:not(:disabled) {
 .design-prompt textarea:focus {
   outline: none;
 }
+
+/* ---------- terminal integrado (Shell, Claude, Copilot) ---------- */
+.empty-terminal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.composer.terminal-target-active {
+  border-color: rgba(61, 214, 140, 0.45);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(61, 214, 140, 0.16);
+}
+
+.composer-dest.terminal-on {
+  color: var(--ok);
+}
+
+.terminal-body {
+  overflow: hidden;
+}
+
+.terminal-view-switch {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.terminal-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.terminal-view-switch button.active {
+  background: var(--bg-input);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.integrated-terminal {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #090b10;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.terminal-targets {
+  display: inline-flex;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+}
+
+.terminal-targets button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.terminal-targets button:hover:not(.active) {
+  color: var(--text);
+}
+
+.terminal-targets button.active {
+  background: var(--bg-input);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.terminal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.22);
+  flex-shrink: 0;
+}
+
+.terminal-dot.on {
+  background: var(--ok);
+}
+
+.terminal-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.terminal-actions button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.terminal-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.terminal-actions button.stop-btn:hover:not(:disabled) {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.terminal-cwd-btn span {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-xterm-host {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 10px;
+  overflow: hidden;
+}
+
+.terminal-xterm-host .xterm {
+  height: 100%;
+}
+
+.terminal-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: rgba(18, 21, 28, 0.85);
+}
+
+.terminal-input-prefix {
+  color: var(--ok);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.terminal-input-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  padding: 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.terminal-input-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.terminal-input-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.terminal-input-bar button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.terminal-tools-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}

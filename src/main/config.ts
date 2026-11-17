@@ -45,6 +45,11 @@ const DEFAULT_SETTINGS: AppSettings = {
     url: 'http://127.0.0.1:4096',
     username: 'opencode',
     password: ''
+  },
+  terminal: {
+    claudeCommand: 'claude',
+    copilotCommand: '',
+    shellCommand: ''
   }
 }
 
@@ -73,6 +78,10 @@ export function loadSettings(): AppSettings {
         opencode: {
           ...DEFAULT_SETTINGS.opencode,
           ...(raw.opencode ?? {})
+        },
+        terminal: {
+          ...DEFAULT_SETTINGS.terminal!,
+          ...(raw.terminal ?? {})
         }
       }
     }
