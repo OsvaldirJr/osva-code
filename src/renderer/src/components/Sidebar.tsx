@@ -3,7 +3,7 @@ import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../
 import { modelChoiceValue } from '../../../shared/types'
 import { ModelChoiceOptions } from './ModelChoice'
 import { conversationKind, folderKey, folderLabel, shortPath, type Conversation, type ConversationKind } from '../App'
-import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette, Bot } from 'lucide-react'
+import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette, Bot, TerminalSquare } from 'lucide-react'
 
 const SIDEBAR_COLLAPSED_KEY = 'osvacode.sidebar.collapsed'
 const GROUP_COLLAPSED_KEY = 'osvacode.sidebar.groupCollapsed'
@@ -101,6 +101,7 @@ export function Sidebar({
   conversations,
   activeId,
   generatingId,
+  runningTerminals,
   tab,
   onTabChange,
   remoteChats,
@@ -120,6 +121,7 @@ export function Sidebar({
   conversations: Conversation[]
   activeId: string | null
   generatingId: string | null
+  runningTerminals?: string[]
   tab: ConversationKind
   onTabChange: (tab: ConversationKind) => void
   remoteChats: RemoteChatStub[]
@@ -321,7 +323,17 @@ export function Sidebar({
                 <span className="conversation-group-count">{group.items.length}</span>
               </button>
             )}
-            {!folded && group.items.map((c) => (
+            {!folded && group.items.map((c) => {
+              const cliRunning = c.cliTarget ? runningTerminals?.includes(`${c.id}:${c.cliTarget}`) : false
+              const cliLabel =
+                c.cliTarget === 'claude'
+                  ? 'Claude'
+                  : c.cliTarget === 'copilot'
+                    ? 'Copilot'
+                    : c.cliTarget === 'shell'
+                      ? 'Shell'
+                      : null
+              return (
               <div
                 key={c.id}
                 className={`conversation-item ${c.id === activeId ? 'active' : ''}`}
@@ -329,10 +341,17 @@ export function Sidebar({
               >
                 <div className="conversation-text">
                   <span className="conversation-title">
-                    {c.id === generatingId && <span className="generating-dot" />}
+                    {(c.id === generatingId || cliRunning) && <span className="generating-dot" />}
                     {c.title}
                   </span>
-                  <span className="conversation-when">{formatWhen(c.updatedAt)}</span>
+                  <span className="conversation-meta-row">
+                    {cliLabel && (
+                      <span className="conversation-cli-badge" title={`Sessão CLI (${cliLabel})`}>
+                        <TerminalSquare size={10} /> {cliLabel}
+                      </span>
+                    )}
+                    <span className="conversation-when">{formatWhen(c.updatedAt)}</span>
+                  </span>
                 </div>
                 <button
                   className="conversation-delete"
@@ -346,7 +365,8 @@ export function Sidebar({
                   <Trash2 size={16} />
                 </button>
               </div>
-            ))}
+              )
+            })}
           </div>
           )
         })}

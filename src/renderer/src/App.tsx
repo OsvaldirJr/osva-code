@@ -34,7 +34,7 @@ import { LoginScreen } from './components/LoginScreen'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SlashMenu, filterSlashCommands, slashQuery } from './components/SlashMenu'
 import { Workbench, type CommandRun, type ReviewHunk, type WorkbenchTab } from './components/Workbench'
-import { terminalSessionId } from './components/IntegratedTerminal'
+import { IntegratedTerminal, terminalSessionId } from './components/IntegratedTerminal'
 import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
@@ -127,6 +127,8 @@ export interface Conversation {
   folder?: string
   /** 'chat' = conversa simples; 'dev' = pasta e ferramentas daqui; 'opencode' = agente do OpenCode. */
   kind?: ConversationKind
+  /** Sessão criada pelo terminal integrado (Claude, Copilot ou Shell). */
+  cliTarget?: TerminalTarget
   /** Sessão criada no servidor OpenCode para esta conversa. */
   opencodeSessionId?: string
   /** Modelo do OpenCode usado nesta conversa. */
@@ -337,6 +339,7 @@ export default function App(): JSX.Element {
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes')
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>('shell')
   const [composerDestination, setComposerDestination] = useState<ComposerDestination>('model')
+  const [runningTerminals, setRunningTerminals] = useState<string[]>([])
   const [fileChanges, setFileChanges] = useState<Record<string, FileChange[]>>({})
   const [commandRuns, setCommandRuns] = useState<Record<string, CommandRun[]>>({})
   const [ocView, setOcView] = useState<OpenCodeView>('session')
@@ -500,6 +503,24 @@ export default function App(): JSX.Element {
     return window.api.onTunnel((url) => {
       setTunnelUrl(url)
       setTunnelBusy(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    void window.api
+      .terminalList()
+      .then((list) => setRunningTerminals(list.filter((s) => s.running).map((s) => s.sessionId)))
+      .catch(() => setRunningTerminals([]))
+    return window.api.onTerminalEvent((event) => {
+      if (event.type === 'status') {
+        setRunningTerminals((prev) => {
+          const exists = prev.includes(event.session.sessionId)
+          if (event.session.running) return exists ? prev : [...prev, event.session.sessionId]
+          return exists ? prev.filter((id) => id !== event.session.sessionId) : prev
+        })
+      } else if (event.type === 'exit') {
+        setRunningTerminals((prev) => prev.filter((id) => id !== event.sessionId))
+      }
     })
   }, [])
 
@@ -1093,8 +1114,8 @@ export default function App(): JSX.Element {
 
   // Chat sem conversa aberta: o campo já fica pronto para digitar.
   useEffect(() => {
-    if (session && tab === 'chat' && !activeId) composerRef.current?.focus()
-  }, [session, tab, activeId])
+    if (session && tab === 'chat' && !activeId && !terminalModeActive) composerRef.current?.focus()
+  }, [session, tab, activeId, terminalModeActive])
 
   const addAttachment = useCallback(async (kind: 'image' | 'file' | 'folder') => {
     setAddOpen(false)
@@ -1114,17 +1135,78 @@ export default function App(): JSX.Element {
   const sendToTerminal = useCallback(
     (target: TerminalTarget, rawText: string) => {
       setTerminalTarget(target)
-      setWorkbenchTab('terminal')
-      setWorkbenchOpen(true)
-      const sessionId = terminalSessionId(workbenchKey, target)
+      setComposerDestination(target)
+      if (workbenchOpen && workbenchTab === 'terminal') {
+        setWorkbenchOpen(false)
+      }
+
+      const currentActive = conversationsRef.current.find((c) => c.id === activeIdRef.current) ?? null
+      let targetConversationId: string
+      let adoptSessionId: string | undefined
+      const folder = currentActive?.folder ?? null
+
+      if (currentActive && currentActive.cliTarget === target) {
+        targetConversationId = currentActive.id
+        const nextConversations = conversationsRef.current.map((c) =>
+          c.id === currentActive.id
+            ? {
+                ...c,
+                title: c.autoTitle ? titleFromContext(rawText) : c.title,
+                autoTitle: false,
+                updatedAt: Date.now()
+              }
+            : c
+        )
+        conversationsRef.current = nextConversations
+        setConversations(nextConversations)
+      } else if (currentActive && currentActive.messages.length === 0 && !currentActive.cliTarget) {
+        targetConversationId = currentActive.id
+        const nextConversations = conversationsRef.current.map((c) =>
+          c.id === currentActive.id
+            ? {
+                ...c,
+                title: c.autoTitle ? titleFromContext(rawText) : c.title,
+                autoTitle: false,
+                cliTarget: target,
+                updatedAt: Date.now()
+              }
+            : c
+        )
+        conversationsRef.current = nextConversations
+        setConversations(nextConversations)
+      } else {
+        targetConversationId = crypto.randomUUID()
+        const convKind: ConversationKind =
+          tab === 'dev' || (currentActive && conversationKind(currentActive) === 'dev') ? 'dev' : 'chat'
+        const created: Conversation = {
+          id: targetConversationId,
+          title: titleFromContext(rawText),
+          autoTitle: false,
+          messages: [],
+          updatedAt: Date.now(),
+          kind: convKind,
+          ...(folder ? { folder } : {}),
+          cliTarget: target
+        }
+        const nextConversations = [created, ...conversationsRef.current]
+        conversationsRef.current = nextConversations
+        setConversations(nextConversations)
+        setActiveId(targetConversationId)
+        if (!currentActive) {
+          adoptSessionId = terminalSessionId('__global__', target)
+        }
+      }
+
+      const sessionId = terminalSessionId(targetConversationId, target)
       void window.api.terminalStart({
         sessionId,
         target,
-        cwd: active?.folder ?? null,
-        initialInput: rawText
+        cwd: folder,
+        initialInput: rawText,
+        ...(adoptSessionId ? { adoptSessionId } : {})
       })
     },
-    [workbenchKey, active?.folder]
+    [tab, workbenchOpen, workbenchTab]
   )
 
   const send = useCallback(async () => {
@@ -1386,6 +1468,7 @@ export default function App(): JSX.Element {
   const changeTab = useCallback((next: ConversationKind) => {
     setTab(next)
     setActiveId(null)
+    setComposerDestination('model')
   }, [])
 
   const changeActiveFolder = useCallback(async () => {
@@ -1418,6 +1501,9 @@ export default function App(): JSX.Element {
         })
       }
       setConversations((prev) => prev.filter((c) => c.id !== id))
+      void window.api.terminalStop(terminalSessionId(id, 'claude'))
+      void window.api.terminalStop(terminalSessionId(id, 'copilot'))
+      void window.api.terminalStop(terminalSessionId(id, 'shell'))
       setFileChanges((prev) => {
         const next = { ...prev }
         delete next[id]
@@ -1716,16 +1802,26 @@ export default function App(): JSX.Element {
           conversations={conversations}
           activeId={activeId}
           generatingId={busy ? generatingConversation.current : null}
+          runningTerminals={runningTerminals}
           tab={tab}
           onTabChange={changeTab}
           remoteChats={remoteChats}
           onImportRemote={(remote) => void importRemoteChat(remote)}
           onSelect={(id) => {
+            const chosen = conversationsRef.current.find((c) => c.id === id)
             setActiveId(id)
             setSection('chats')
+            if (chosen?.cliTarget) {
+              setTerminalTarget(chosen.cliTarget)
+              setComposerDestination(chosen.cliTarget)
+              if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+            } else {
+              setComposerDestination('model')
+            }
           }}
           onNew={() => {
             setSection('chats')
+            setComposerDestination('model')
             void startNewConversation()
           }}
           onDelete={deleteConversation}
@@ -1919,14 +2015,16 @@ export default function App(): JSX.Element {
             )}
             {activeKind !== 'opencode' && (
               <button
-                className={`folder-chip ${workbenchOpen && workbenchTab === 'terminal' ? 'active' : ''}`}
-                title="Abrir terminal integrado (Shell, Claude ou Copilot)"
+                className={`folder-chip ${terminalModeActive ? 'active' : ''}`}
+                title="Alternar terminal integrado no lugar do chat (Shell, Claude ou Copilot)"
                 onClick={() => {
-                  if (workbenchOpen && workbenchTab === 'terminal') {
-                    setWorkbenchOpen(false)
+                  if (terminalModeActive) {
+                    setComposerDestination('model')
                   } else {
-                    setWorkbenchTab('terminal')
-                    setWorkbenchOpen(true)
+                    setComposerDestination(terminalTarget)
+                    if (workbenchOpen && workbenchTab === 'terminal') {
+                      setWorkbenchOpen(false)
+                    }
                   }
                 }}
               >
@@ -1954,6 +2052,21 @@ export default function App(): JSX.Element {
         )}
         {section === 'chats' && (
         <>
+        {tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model' ? (
+          <div className="chat-terminal-stage">
+            <IntegratedTerminal
+              conversationKey={workbenchKey}
+              folder={active?.folder ?? null}
+              target={composerDestination}
+              onTargetChange={(next) => {
+                setTerminalTarget(next)
+                setComposerDestination(next)
+              }}
+              hideInputBar
+              onExitToChat={() => setComposerDestination('model')}
+            />
+          </div>
+        ) : (
         <div className="chat" ref={scrollRef}>
           {activeKind === 'opencode' && (
             <OpenCodeSections
@@ -2067,8 +2180,7 @@ export default function App(): JSX.Element {
                       onClick={() => {
                         setTerminalTarget('claude')
                         setComposerDestination('claude')
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
                       }}
                     >
                       <TerminalSquare size={14} /> Abrir Claude no terminal
@@ -2079,8 +2191,7 @@ export default function App(): JSX.Element {
                       onClick={() => {
                         setTerminalTarget('copilot')
                         setComposerDestination('copilot')
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
                       }}
                     >
                       <TerminalSquare size={14} /> Abrir Copilot no terminal
@@ -2090,8 +2201,8 @@ export default function App(): JSX.Element {
                       className="folder-chip"
                       onClick={() => {
                         setTerminalTarget('shell')
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        setComposerDestination('shell')
+                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
                       }}
                     >
                       <TerminalSquare size={14} /> Abrir Shell
@@ -2114,8 +2225,7 @@ export default function App(): JSX.Element {
                       onClick={() => {
                         setTerminalTarget('claude')
                         setComposerDestination('claude')
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
                       }}
                     >
                       <TerminalSquare size={14} /> Abrir Claude no terminal
@@ -2126,8 +2236,7 @@ export default function App(): JSX.Element {
                       onClick={() => {
                         setTerminalTarget('copilot')
                         setComposerDestination('copilot')
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
                       }}
                     >
                       <TerminalSquare size={14} /> Abrir Copilot no terminal
@@ -2178,17 +2287,69 @@ export default function App(): JSX.Element {
             <div className="thinking reconnecting">Conexão caiu — retomando automaticamente…</div>
           )}
         </div>
+        )}
 
         <footer className="composer-area">
           {(() => {
             const changes = activeId ? fileChanges[activeId] ?? [] : []
             const additions = changes.reduce((sum, change) => sum + change.additions, 0)
             const deletions = changes.reduce((sum, change) => sum + change.deletions, 0)
+            const activeTermId =
+              tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model'
+                ? terminalSessionId(workbenchKey, composerDestination)
+                : null
             const showChips =
-              attachments.length > 0 || changes.length > 0 || (activeKind === 'dev' && !active?.folder)
+              Boolean(activeTermId) ||
+              attachments.length > 0 ||
+              changes.length > 0 ||
+              (activeKind === 'dev' && !active?.folder)
             if (!showChips) return null
             return (
               <div className="composer-chips">
+                {activeTermId && (
+                  <>
+                    <button
+                      type="button"
+                      className="composer-chip"
+                      title="Enviar Enter"
+                      onClick={() => void window.api.terminalWrite(activeTermId, '\r')}
+                    >
+                      Enter ↵
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-chip"
+                      title="Enviar Esc"
+                      onClick={() => void window.api.terminalWrite(activeTermId, '\x1b')}
+                    >
+                      Esc
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-chip"
+                      title="Enviar Ctrl+C"
+                      onClick={() => void window.api.terminalWrite(activeTermId, '\x03')}
+                    >
+                      Ctrl+C
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-chip"
+                      title="Confirmar (y + Enter)"
+                      onClick={() => void window.api.terminalSendLine(activeTermId, 'y')}
+                    >
+                      Sim (y)
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-chip"
+                      title="Recusar (n + Enter)"
+                      onClick={() => void window.api.terminalSendLine(activeTermId, 'n')}
+                    >
+                      Não (n)
+                    </button>
+                  </>
+                )}
                 {activeKind === 'dev' && !active?.folder && (
                   <button type="button" className="composer-chip warn" onClick={() => void changeActiveFolder()}>
                     <AlertTriangle size={13} /> Definir pasta
@@ -2336,6 +2497,14 @@ export default function App(): JSX.Element {
                     ))}
                   </select>
                 </label>
+              ) : terminalModeActive ? (
+                <span className="composer-terminal-badge">
+                  {composerDestination === 'claude'
+                    ? 'Claude CLI'
+                    : composerDestination === 'copilot'
+                      ? 'Copilot CLI'
+                      : 'Shell'}
+                </span>
               ) : (
                 settings && (settings.providers.length > 0 || (settings.flows ?? []).length > 0) && (
                 <label
@@ -2419,8 +2588,9 @@ export default function App(): JSX.Element {
                       setComposerDestination(next)
                       if (next !== 'model') {
                         setTerminalTarget(next)
-                        setWorkbenchTab('terminal')
-                        setWorkbenchOpen(true)
+                        if (workbenchOpen && workbenchTab === 'terminal') {
+                          setWorkbenchOpen(false)
+                        }
                       }
                     }}
                   >
@@ -2490,6 +2660,11 @@ export default function App(): JSX.Element {
             onPickFolder={() => void changeActiveFolder()}
             terminalTarget={terminalTarget}
             onTerminalTarget={setTerminalTarget}
+            terminalInMainView={terminalModeActive}
+            onBringTerminalToPanel={() => {
+              setComposerDestination('model')
+              setWorkbenchTab('terminal')
+            }}
             changes={activeId ? (fileChanges[activeId] ?? []) : []}
             artifacts={activeId ? (artifacts[activeId] ?? []) : []}
             activeArtifactId={activeArtifactId}

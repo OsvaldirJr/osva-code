@@ -641,7 +641,8 @@ function registerIpc(): void {
   })
 
   setTerminalEventSink((event) => {
-    mainWindow?.webContents.send('terminal:event', event)
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send('terminal:event', event)
   })
   ipcMain.handle('terminal:tools', () => detectTerminalTools())
   ipcMain.handle(
@@ -656,6 +657,7 @@ function registerIpc(): void {
         rows?: number
         initialInput?: string
         restart?: boolean
+        adoptSessionId?: string
       }
     ) =>
       startTerminalSession({

@@ -74,6 +74,8 @@ export function Workbench({
   onPickFolder,
   terminalTarget,
   onTerminalTarget,
+  terminalInMainView,
+  onBringTerminalToPanel,
   changes,
   artifacts,
   activeArtifactId,
@@ -94,6 +96,8 @@ export function Workbench({
   onPickFolder?: () => void
   terminalTarget: TerminalTarget
   onTerminalTarget: (target: TerminalTarget) => void
+  terminalInMainView?: boolean
+  onBringTerminalToPanel?: () => void
   changes: FileChange[]
   artifacts: Artifact[]
   activeArtifactId: string | null
@@ -467,6 +471,20 @@ export function Workbench({
                   <pre>{run.output}</pre>
                 </article>
               ))}
+            </div>
+          ) : terminalInMainView ? (
+            <div className="workbench-empty">
+              <p>O terminal integrado está aberto no lugar da janela do chat.</p>
+              {onBringTerminalToPanel && (
+                <button
+                  type="button"
+                  className="folder-chip"
+                  style={{ marginTop: '12px' }}
+                  onClick={onBringTerminalToPanel}
+                >
+                  <TerminalSquare size={14} /> Trazer para o painel lateral
+                </button>
+              )}
             </div>
           ) : (
             <IntegratedTerminal
