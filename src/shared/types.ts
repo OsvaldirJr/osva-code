@@ -33,6 +33,43 @@ export interface OpenCodeConfig {
   password: string
 }
 
+/** Alvo de execução do terminal integrado. */
+export type TerminalTarget = 'shell' | 'claude' | 'copilot'
+
+/** Destino escolhido no campo de mensagem da conversa. */
+export type ComposerDestination = 'model' | TerminalTarget
+
+/** Comandos configuráveis para os CLIs executados no terminal integrado. */
+export interface TerminalCliConfig {
+  claudeCommand: string
+  copilotCommand: string
+  shellCommand: string
+}
+
+/** Binários detectados no PATH do sistema para o terminal integrado. */
+export interface TerminalToolStatus {
+  claude: string | null
+  copilot: string | null
+  gh: string | null
+}
+
+/** Estado atual de uma sessão do terminal integrado. */
+export interface TerminalSessionInfo {
+  sessionId: string
+  target: TerminalTarget
+  cwd: string
+  command: string
+  running: boolean
+  exitCode?: number | null
+}
+
+/** Eventos emitidos pelo terminal integrado para a interface. */
+export type TerminalEvent =
+  | { sessionId: string; type: 'data'; data: string }
+  | { sessionId: string; type: 'exit'; code: number | null }
+  | { sessionId: string; type: 'error'; message: string }
+  | { sessionId: string; type: 'status'; session: TerminalSessionInfo }
+
 /** Modelo disponível no servidor OpenCode. */
 export interface OpenCodeModel {
   id: string
@@ -116,6 +153,8 @@ export interface AppSettings {
   automations: Automation[]
   /** Conexão com o servidor OpenCode desta máquina. */
   opencode: OpenCodeConfig
+  /** Comandos do terminal integrado (Claude, Copilot e Shell). */
+  terminal?: TerminalCliConfig
 }
 
 export type AutomationSchedule = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly'

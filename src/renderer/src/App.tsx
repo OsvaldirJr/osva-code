@@ -5,6 +5,7 @@ import type {
   AutomationHookEvent,
   AuthSession,
   ChatMessage,
+  ComposerDestination,
   PickedAttachment,
   FileChange,
   OpenCodeFileDiff,
@@ -13,7 +14,8 @@ import type {
   OpenCodePermission,
   McpServerStatus,
   RemoteChatStub,
-  SlashCommand
+  SlashCommand,
+  TerminalTarget
 } from '../../shared/types'
 import { AUTOMATION_HOOK_PORT } from '../../shared/types'
 import type { DesignKind } from '../../shared/design'
@@ -30,10 +32,11 @@ import { LoginScreen } from './components/LoginScreen'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SlashMenu, filterSlashCommands, slashQuery } from './components/SlashMenu'
 import { Workbench, type CommandRun, type ReviewHunk, type WorkbenchTab } from './components/Workbench'
+import { terminalSessionId } from './components/IntegratedTerminal'
 import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
-  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight
+  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight, TerminalSquare
 } from 'lucide-react'
 
 export type UiMessage =
@@ -330,6 +333,8 @@ export default function App(): JSX.Element {
   const [projectPanelOpen, setProjectPanelOpen] = useState(false)
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes')
+  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>('shell')
+  const [composerDestination, setComposerDestination] = useState<ComposerDestination>('model')
   const [fileChanges, setFileChanges] = useState<Record<string, FileChange[]>>({})
   const [commandRuns, setCommandRuns] = useState<Record<string, CommandRun[]>>({})
   const [ocView, setOcView] = useState<OpenCodeView>('session')
@@ -409,10 +414,12 @@ export default function App(): JSX.Element {
 
   const active = conversations.find((c) => c.id === activeId) ?? null
   const activeKind = active ? conversationKind(active) : null
+  const workbenchKey = activeId ?? '__global__'
+  const terminalModeActive = tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model'
   // pronta para conversar: chat não precisa de pasta; dev precisa.
   const activeReady = !!active && (activeKind === 'chat' || !!active.folder)
   // No Chat, dá para escrever sem conversa aberta: o envio cria uma nova.
-  const composerEnabled = (tab === 'chat' && !active) || activeReady
+  const composerEnabled = (tab === 'chat' && !active) || activeReady || terminalModeActive
 
   // ---------- comandos de barra (/ação e /skill) ----------
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
@@ -432,7 +439,7 @@ export default function App(): JSX.Element {
     if (!projectPanelOpen) refreshSlashCommands()
   }, [refreshSlashCommands, projectPanelOpen])
 
-  const slash = composerEnabled && !slashDismissed ? slashQuery(input) : null
+  const slash = composerEnabled && !terminalModeActive && !slashDismissed ? slashQuery(input) : null
   const slashItems = slash ? filterSlashCommands(slashCommands, slash.query) : []
   const slashOpen = slashItems.length > 0
 
@@ -1102,8 +1109,31 @@ export default function App(): JSX.Element {
     setAttachments((prev) => [...prev, ...next])
   }, [])
 
+  const sendToTerminal = useCallback(
+    (target: TerminalTarget, rawText: string) => {
+      setTerminalTarget(target)
+      setWorkbenchTab('terminal')
+      setWorkbenchOpen(true)
+      const sessionId = terminalSessionId(workbenchKey, target)
+      void window.api.terminalStart({
+        sessionId,
+        target,
+        cwd: active?.folder ?? null,
+        initialInput: rawText
+      })
+    },
+    [workbenchKey, active?.folder]
+  )
+
   const send = useCallback(async () => {
     const baseText = input.trim()
+    if (tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model') {
+      if (!baseText) return
+      const rawText = input.trimEnd()
+      setInput('')
+      sendToTerminal(composerDestination, rawText)
+      return
+    }
     if ((!baseText && attachments.length === 0) || busy) return
     // Sem conversa aberta, o Chat cria uma na hora. DevMode ainda pede pasta.
     if (!active && tab !== 'chat') return
@@ -1209,7 +1239,7 @@ export default function App(): JSX.Element {
     chatTargets.current.set(requestId, conversationId)
     generatingConversation.current = conversationId
     void window.api.sendChat(requestId, history, { folder, mode, teamId })
-  }, [input, busy, active, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel])
+  }, [input, busy, active, activeKind, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel, composerDestination, sendToTerminal])
 
   const toggleRecording = useCallback(() => {
     if (!recognitionRef.current) {
@@ -1824,6 +1854,24 @@ export default function App(): JSX.Element {
               </button>
             )}
             {activeKind !== 'opencode' && (
+              <button
+                className={`folder-chip ${workbenchOpen && workbenchTab === 'terminal' ? 'active' : ''}`}
+                title="Abrir terminal integrado (Shell, Claude ou Copilot)"
+                onClick={() => {
+                  if (workbenchOpen && workbenchTab === 'terminal') {
+                    setWorkbenchOpen(false)
+                  } else {
+                    setWorkbenchTab('terminal')
+                    setWorkbenchOpen(true)
+                  }
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <TerminalSquare size={14} /> Terminal
+                </span>
+              </button>
+            )}
+            {activeKind !== 'opencode' && (
             <button
               className={`folder-chip ${workbenchOpen ? 'active' : ''}`}
               title="Alterações, artefatos e navegador"
@@ -1946,8 +1994,45 @@ export default function App(): JSX.Element {
                     da primeira mensagem.
                   </p>
                   <p className="hint">
-                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>.
+                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou abra o terminal integrado para rodar comandos no Claude ou Copilot.
                   </p>
+                  <div className="empty-terminal-actions">
+                    <button
+                      type="button"
+                      className="folder-chip"
+                      onClick={() => {
+                        setTerminalTarget('claude')
+                        setComposerDestination('claude')
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }}
+                    >
+                      <TerminalSquare size={14} /> Abrir Claude no terminal
+                    </button>
+                    <button
+                      type="button"
+                      className="folder-chip"
+                      onClick={() => {
+                        setTerminalTarget('copilot')
+                        setComposerDestination('copilot')
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }}
+                    >
+                      <TerminalSquare size={14} /> Abrir Copilot no terminal
+                    </button>
+                    <button
+                      type="button"
+                      className="folder-chip"
+                      onClick={() => {
+                        setTerminalTarget('shell')
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }}
+                    >
+                      <TerminalSquare size={14} /> Abrir Shell
+                    </button>
+                  </div>
                 </>
               ) : (
                 <>
@@ -1956,8 +2041,34 @@ export default function App(): JSX.Element {
                     e escolha a pasta. O modelo ganha ferramentas para ler e editar os arquivos dela.
                   </p>
                   <p className="hint">
-                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>.
+                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou use o terminal integrado abaixo com Claude ou Copilot.
                   </p>
+                  <div className="empty-terminal-actions">
+                    <button
+                      type="button"
+                      className="folder-chip"
+                      onClick={() => {
+                        setTerminalTarget('claude')
+                        setComposerDestination('claude')
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }}
+                    >
+                      <TerminalSquare size={14} /> Abrir Claude no terminal
+                    </button>
+                    <button
+                      type="button"
+                      className="folder-chip"
+                      onClick={() => {
+                        setTerminalTarget('copilot')
+                        setComposerDestination('copilot')
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }}
+                    >
+                      <TerminalSquare size={14} /> Abrir Copilot no terminal
+                    </button>
+                  </div>
                 </>
               )}
             </div>
@@ -2050,7 +2161,7 @@ export default function App(): JSX.Element {
             )
           })()}
 
-          <div className="composer">
+          <div className={`composer ${terminalModeActive ? 'terminal-target-active' : ''}`}>
             {slashOpen && (
               <SlashMenu
                 items={slashItems}
@@ -2092,9 +2203,15 @@ export default function App(): JSX.Element {
               placeholder={
                 !composerEnabled
                   ? 'Crie uma conversa no menu para começar'
-                  : messages.length > 0
-                    ? 'Envie uma continuação  ·  / para ações e skills'
-                    : 'Envie uma mensagem  ·  / para ações e skills'
+                  : terminalModeActive
+                    ? composerDestination === 'claude'
+                      ? 'Digite um comando ou pedido para passar ao Claude no terminal…'
+                      : composerDestination === 'copilot'
+                        ? 'Digite um comando ou pedido para passar ao Copilot no terminal…'
+                        : 'Digite um comando para passar ao terminal integrado…'
+                    : messages.length > 0
+                      ? 'Envie uma continuação  ·  / para ações e skills'
+                      : 'Envie uma mensagem  ·  / para ações e skills'
               }
               onChange={(e) => {
                 setInput(e.target.value)
@@ -2210,6 +2327,41 @@ export default function App(): JSX.Element {
 
           <div className="composer-meta">
             <div className="composer-meta-left">
+              {tab !== 'opencode' && activeKind !== 'opencode' && (
+                <label
+                  className={`composer-meta-btn composer-dest ${composerDestination !== 'model' ? 'terminal-on' : ''}`}
+                  title="Escolha se o que você digita vai para o modelo ou direto para o terminal integrado (Claude, Copilot ou Shell)"
+                >
+                  <TerminalSquare size={13} />
+                  <span>
+                    {composerDestination === 'model'
+                      ? 'Enviar para: Modelo'
+                      : composerDestination === 'claude'
+                        ? 'Terminal · Claude'
+                        : composerDestination === 'copilot'
+                          ? 'Terminal · Copilot'
+                          : 'Terminal · Shell'}
+                  </span>
+                  <ChevronDown size={13} />
+                  <select
+                    value={composerDestination}
+                    onChange={(e) => {
+                      const next = e.target.value as ComposerDestination
+                      setComposerDestination(next)
+                      if (next !== 'model') {
+                        setTerminalTarget(next)
+                        setWorkbenchTab('terminal')
+                        setWorkbenchOpen(true)
+                      }
+                    }}
+                  >
+                    <option value="model">Modelo (Chat)</option>
+                    <option value="claude">Claude (Terminal)</option>
+                    <option value="copilot">Copilot (Terminal)</option>
+                    <option value="shell">Shell (Terminal)</option>
+                  </select>
+                </label>
+              )}
               {activeKind === 'dev' && (
                 <button
                   type="button"
@@ -2222,7 +2374,7 @@ export default function App(): JSX.Element {
                   <ChevronDown size={13} />
                 </button>
               )}
-              {activeKind === 'dev' && (
+              {activeKind === 'dev' && !terminalModeActive && (
                 <label className="composer-meta-btn">
                   <span>{mode === 'edit' ? 'Editar arquivos' : 'Apenas propor'}</span>
                   <ChevronDown size={13} />
@@ -2236,8 +2388,8 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               )}
-              {activeKind !== 'dev' && (
-                <span className="composer-meta-quiet">{tab === 'opencode' ? 'OpenCode' : 'Chat'}</span>
+              {activeKind !== 'dev' && tab === 'opencode' && (
+                <span className="composer-meta-quiet">OpenCode</span>
               )}
             </div>
             <div className="composer-usage" ref={usageRef}>
@@ -2260,10 +2412,14 @@ export default function App(): JSX.Element {
         </>
         )}
         </div>
-        {section === 'chats' && workbenchOpen && activeId && activeKind !== 'opencode' && (
+        {section === 'chats' && workbenchOpen && tab !== 'opencode' && activeKind !== 'opencode' && (
           <Workbench
-            changes={fileChanges[activeId] ?? []}
-            artifacts={artifacts[activeId] ?? []}
+            conversationKey={workbenchKey}
+            folder={active?.folder ?? null}
+            terminalTarget={terminalTarget}
+            onTerminalTarget={setTerminalTarget}
+            changes={activeId ? (fileChanges[activeId] ?? []) : []}
+            artifacts={activeId ? (artifacts[activeId] ?? []) : []}
             activeArtifactId={activeArtifactId}
             tab={workbenchTab}
             covered={settingsOpen || projectPanelOpen}
@@ -2271,19 +2427,20 @@ export default function App(): JSX.Element {
             onClose={() => setWorkbenchOpen(false)}
             onSelectArtifact={setActiveArtifactId}
             onOpenArtifact={openArtifact}
-            onClearChanges={() =>
-              setFileChanges((prev) => ({ ...prev, [activeId]: [] }))
-            }
-            commands={commandRuns[activeId] ?? []}
-            onAcceptChange={(path) =>
+            onClearChanges={() => {
+              if (activeId) setFileChanges((prev) => ({ ...prev, [activeId]: [] }))
+            }}
+            commands={activeId ? (commandRuns[activeId] ?? []) : []}
+            onAcceptChange={(path) => {
+              if (!activeId) return
               setFileChanges((prev) => ({
                 ...prev,
                 [activeId]: (prev[activeId] ?? []).filter((item) => item.path !== path)
               }))
-            }
+            }}
             onRevertChange={(change) => {
               const folder = active?.folder
-              if (!folder || change.previous === undefined) return
+              if (!folder || !activeId || change.previous === undefined) return
               void window.api.revertWorkspace(folder, change.path, change.previous).then((next) => {
                 setFileChanges((prev) => ({
                   ...prev,
@@ -2295,7 +2452,7 @@ export default function App(): JSX.Element {
             }}
             onRevertHunk={(change, hunk: ReviewHunk) => {
               const folder = active?.folder
-              if (!folder || change.previous === undefined) return
+              if (!folder || !activeId || change.previous === undefined) return
               void window.api
                 .revertHunk(folder, change.path, change.previous, {
                   removed: hunk.removed,

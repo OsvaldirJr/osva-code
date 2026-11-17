@@ -12,8 +12,9 @@ import {
   TerminalSquare,
   X
 } from 'lucide-react'
-import type { BrowserState, DiffLine, FileChange } from '../../../shared/types'
+import type { BrowserState, DiffLine, FileChange, TerminalTarget } from '../../../shared/types'
 import { artifactFromChange, type Artifact } from '../artifacts'
+import { IntegratedTerminal } from './IntegratedTerminal'
 
 export type WorkbenchTab = 'changes' | 'artifacts' | 'browser' | 'terminal'
 
@@ -63,6 +64,10 @@ const EMPTY_BROWSER: BrowserState = {
 }
 
 export function Workbench({
+  conversationKey,
+  folder,
+  terminalTarget,
+  onTerminalTarget,
   changes,
   artifacts,
   activeArtifactId,
@@ -78,6 +83,10 @@ export function Workbench({
   onRevertChange,
   onRevertHunk
 }: {
+  conversationKey: string
+  folder?: string | null
+  terminalTarget: TerminalTarget
+  onTerminalTarget: (target: TerminalTarget) => void
   changes: FileChange[]
   artifacts: Artifact[]
   activeArtifactId: string | null
@@ -98,6 +107,7 @@ export function Workbench({
   const [draftUrl, setDraftUrl] = useState('')
   const [urlFocused, setUrlFocused] = useState(false)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [terminalSubView, setTerminalSubView] = useState<'interactive' | 'model-logs'>('interactive')
   const embedded = typeof window.api?.setBrowserBounds === 'function'
 
   useEffect(() => {
@@ -256,12 +266,26 @@ export function Workbench({
       )}
 
       {tab === 'terminal' && (
-        <div className="workbench-body">
-          {commands.length === 0 ? (
-            <div className="workbench-empty">
-              Quando o modelo rodar um comando na pasta, a saída aparece aqui.
+        <div className="workbench-body terminal-body">
+          {commands.length > 0 && (
+            <div className="terminal-view-switch">
+              <button
+                type="button"
+                className={terminalSubView === 'interactive' ? 'active' : ''}
+                onClick={() => setTerminalSubView('interactive')}
+              >
+                Terminal integrado
+              </button>
+              <button
+                type="button"
+                className={terminalSubView === 'model-logs' ? 'active' : ''}
+                onClick={() => setTerminalSubView('model-logs')}
+              >
+                Comandos do modelo <span className="panel-count">{commands.length}</span>
+              </button>
             </div>
-          ) : (
+          )}
+          {terminalSubView === 'model-logs' && commands.length > 0 ? (
             <div className="terminal-log">
               {commands.map((run) => (
                 <article key={run.at} className={run.ok ? 'ok' : 'fail'}>
@@ -270,6 +294,13 @@ export function Workbench({
                 </article>
               ))}
             </div>
+          ) : (
+            <IntegratedTerminal
+              conversationKey={conversationKey}
+              folder={folder}
+              target={terminalTarget}
+              onTargetChange={onTerminalTarget}
+            />
           )}
         </div>
       )}
