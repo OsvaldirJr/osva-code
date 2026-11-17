@@ -7,8 +7,11 @@ import type {
   AutomationSchedule,
   AutomationTrigger,
   McpServerStatus,
+  ModelFlow,
   ProviderConfig
 } from '../../../shared/types'
+import { parseModelChoice, FLOW_PREFIX } from '../../../shared/types'
+import { ModelChoiceOptions } from './ModelChoice'
 import { automationHookUrl } from '../../../shared/types'
 import { folderLabel } from '../App'
 
@@ -53,6 +56,7 @@ function ready(raw: Automation): Automation {
     kind: raw.kind === 'dev' ? 'dev' : 'chat',
     enabled: raw.enabled !== false,
     providerId: raw.providerId ?? null,
+    flowId: raw.flowId ?? null,
     triggers: raw.triggers?.length
       ? raw.triggers
       : [{ id: `${raw.id}-manual`, kind: 'manual', label: 'Quando eu rodar' }],
@@ -98,7 +102,9 @@ function Switch({
 export function AutomationsPanel({
   automations,
   providers,
+  flows,
   activeProviderId,
+  activeFlowId,
   mcpStatus,
   userName,
   hookPort,
@@ -114,7 +120,9 @@ export function AutomationsPanel({
 }: {
   automations: Automation[]
   providers: ProviderConfig[]
+  flows: ModelFlow[]
   activeProviderId: string | null
+  activeFlowId: string | null
   mcpStatus: McpServerStatus[]
   userName: string
   hookPort: number
@@ -155,7 +163,8 @@ export function AutomationsPanel({
       prompt: '',
       kind: 'chat',
       enabled: false,
-      providerId: activeProviderId,
+      providerId: activeFlowId ? null : activeProviderId,
+      flowId: activeFlowId,
       triggers: [{ id: crypto.randomUUID(), kind: 'manual', label: 'Quando eu rodar' }],
       runs: []
     })
@@ -211,7 +220,10 @@ export function AutomationsPanel({
     )
   }
 
-  const provider = providers.find((item) => item.id === (draft.providerId || activeProviderId))
+  const selectedFlow = flows.find((item) => item.id === draft.flowId) ?? null
+  const provider = selectedFlow
+    ? undefined
+    : providers.find((item) => item.id === (draft.providerId || activeProviderId))
   const hasManual = (draft.triggers ?? []).some((trigger) => trigger.kind === 'manual')
   const hasSchedule = (schedule: AutomationSchedule): boolean =>
     (draft.triggers ?? []).some((trigger) => trigger.schedule === schedule)
@@ -466,16 +478,23 @@ export function AutomationsPanel({
                 onBlur={() => onSave(draft)}
               />
               <label className="auto-model">
-                <span>{provider?.name ?? 'Modelo'}</span>
+                <span>{selectedFlow?.name.trim() || provider?.name || 'Modelo'}</span>
                 <select
-                  value={draft.providerId || activeProviderId || ''}
-                  onChange={(event) => commit({ ...draft, providerId: event.target.value || null })}
+                  value={
+                    draft.flowId
+                      ? `${FLOW_PREFIX}${draft.flowId}`
+                      : draft.providerId || activeProviderId || ''
+                  }
+                  onChange={(event) => {
+                    const choice = parseModelChoice(event.target.value)
+                    commit({
+                      ...draft,
+                      providerId: choice.flowId ? null : choice.providerId,
+                      flowId: choice.flowId
+                    })
+                  }}
                 >
-                  {providers.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
+                  <ModelChoiceOptions providers={providers} flows={flows} />
                 </select>
               </label>
             </div>

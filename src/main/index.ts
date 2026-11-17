@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto'
 import { DEFAULT_OPENWEBUI_URL, loadSettings, saveSettings } from './config'
 import { McpManager } from './mcp'
 import { runTeam } from './agents'
+import { runFlow } from './flows'
 import { listModels, runChat, runSimplify, type PermissionRequest } from './chat'
 import { owuiDeleteChat, owuiListChats, owuiPullChat, owuiPushChat, type OwuiAuth } from './sync'
 import { clearSessionFile, loadSessionFile, owuiSignin, owuiSignup, saveSessionFile } from './auth'
@@ -46,7 +47,14 @@ import {
   replyOpenCodePermission,
   startOpenCodeStream
 } from './opencode'
-import { rejectWorkspaceHunk, restoreWorkspaceFile, type HunkEdit } from './workspaceActions'
+import {
+  listWorkspaceFiles,
+  openInVscode,
+  rejectWorkspaceHunk,
+  restoreWorkspaceFile,
+  type HunkEdit
+} from './workspaceActions'
+import { fetchPluginsCatalog, pluginMcpServers } from './plugins'
 import {
   closeAllTerminals,
   detectTerminalTools,
@@ -84,8 +92,11 @@ let settings: AppSettings = {
   toolPermissions: {},
   openWebUi: { url: '', apiKey: '', enabled: false },
   teams: [],
+  flows: [],
+  activeFlowId: null,
   automations: [],
   opencode: { url: 'http://127.0.0.1:4096', username: 'opencode', password: '' },
+  plugins: { serverUrl: '', installed: [] },
   terminal: { claudeCommand: 'claude', copilotCommand: '', shellCommand: '' }
 }
 const mcp = new McpManager()
@@ -213,6 +224,10 @@ function activeProvider() {
   return settings.providers.find((p) => p.id === settings.activeProviderId) ?? settings.providers[0]
 }
 
+function allMcpServers() {
+  return [...settings.mcpServers, ...pluginMcpServers(settings.plugins?.installed)]
+}
+
 function registerIpc(): void {
   ipcMain.handle('settings:get', () => settings)
 
@@ -220,11 +235,12 @@ function registerIpc(): void {
     settings = next
     saveSettings(settings)
     startOpenCodeStream(settings.opencode, publishOpenCode)
-    await mcp.sync(settings.mcpServers)
-    return mcp.status(settings.mcpServers)
+    const servers = allMcpServers()
+    await mcp.sync(servers)
+    return mcp.status(servers)
   })
 
-  ipcMain.handle('mcp:status', () => mcp.status(settings.mcpServers))
+  ipcMain.handle('mcp:status', () => mcp.status(allMcpServers()))
   ipcMain.handle('hooks:port', () => hookPort)
 
   ipcMain.handle('opencode:status', () => openCodeStatus(settings.opencode))
@@ -278,6 +294,13 @@ function registerIpc(): void {
     'workspace:revert-hunk',
     (_event, folder: string, filePath: string, previous: string | null, hunk: HunkEdit) =>
       rejectWorkspaceHunk(folder, filePath, previous, hunk)
+  )
+  ipcMain.handle('workspace:list-files', (_event, folder: string) => listWorkspaceFiles(folder))
+  ipcMain.handle('workspace:open-vscode', (_event, folder: string, relativePath?: string) =>
+    openInVscode(folder, relativePath)
+  )
+  ipcMain.handle('plugins:catalog', (_event, serverUrl?: string) =>
+    fetchPluginsCatalog(serverUrl ?? settings.plugins?.serverUrl)
   )
 
   ipcMain.handle('models:list', async (_event, providerId: string) => {
@@ -346,8 +369,19 @@ function registerIpc(): void {
       const team = options?.teamId
         ? (settings.teams ?? []).find((item) => item.id === options.teamId)
         : undefined
+      const flow = options?.flowId
+        ? (settings.flows ?? []).find((item) => item.id === options.flowId)
+        : undefined
+      const useFlow = !!options?.flowId && !options?.design
       const useTeam = !!team && team.steps.length > 0
-      if ((!useTeam || options?.design) && !provider) {
+      if (useFlow && !flow) {
+        emitTo(requestId, {
+          type: 'error',
+          message: 'Esse fluxo não existe mais. Abra Configurações → Fluxos.'
+        })
+        return
+      }
+      if (!useFlow && (!useTeam || options?.design) && !provider) {
         emitTo(requestId, {
           type: 'error',
           message: 'Nenhum provedor de modelo configurado. Abra as Configurações.'
@@ -396,9 +430,9 @@ function registerIpc(): void {
       const emit = (event: Parameters<typeof emitTo>[1]): void => emitTo(requestId, event)
       const requestPermission = (request: PermissionRequest): Promise<'allow' | 'deny'> =>
         resolvePermission(requestId, request, controller.signal)
-      const run = useTeam && !options?.design
-        ? runTeam({
-            team: team!,
+      const run = useFlow
+        ? runFlow({
+            flow: flow!,
             providers: settings.providers,
             systemPrompt,
             history,
@@ -408,7 +442,19 @@ function registerIpc(): void {
             signal: controller.signal,
             allowFileWrites: mode !== 'propose'
           })
-        : runChat({
+        : useTeam && !options?.design
+          ? runTeam({
+              team: team!,
+              providers: settings.providers,
+              systemPrompt,
+              history,
+              mcp,
+              emit,
+              requestPermission,
+              signal: controller.signal,
+              allowFileWrites: mode !== 'propose'
+            })
+          : runChat({
             provider: provider!,
             systemPrompt,
             history,
@@ -753,7 +799,7 @@ app.whenReady().then(async () => {
   installTray()
   createWindow()
   startOpenCodeStream(settings.opencode, publishOpenCode)
-  await mcp.sync(settings.mcpServers)
+  await mcp.sync(allMcpServers())
 
   app.on('activate', () => {
     showMainWindow()

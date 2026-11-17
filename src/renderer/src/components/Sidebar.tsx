@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
+import { modelChoiceValue } from '../../../shared/types'
+import { ModelChoiceOptions } from './ModelChoice'
 import { conversationKind, folderKey, folderLabel, shortPath, type Conversation, type ConversationKind } from '../App'
 import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette, Bot } from 'lucide-react'
 
@@ -127,8 +129,8 @@ export function Sidebar({
   onDelete: (id: string) => void
   onChangeProvider: (providerId: string) => void
   onOpenSettings: () => void
-  section: 'chats' | 'automations' | 'design'
-  onSectionChange: (section: 'chats' | 'automations' | 'design') => void
+  section: 'chats' | 'automations' | 'design' | 'plugins'
+  onSectionChange: (section: 'chats' | 'automations' | 'design' | 'plugins') => void
 }): JSX.Element {
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState('')
@@ -235,6 +237,14 @@ export function Sidebar({
           onClick={() => onSectionChange(section === 'design' ? 'chats' : 'design')}
         >
           <Palette size={16} /> <span>Design</span>
+        </button>
+        <button
+          type="button"
+          title="Plugins"
+          className={section === 'plugins' ? 'active' : ''}
+          onClick={() => onSectionChange(section === 'plugins' ? 'chats' : 'plugins')}
+        >
+          <Plug size={16} /> <span>Plugins</span>
         </button>
       </nav>
 
@@ -371,14 +381,10 @@ export function Sidebar({
           Modelo ativo
           <select
             className="provider-select"
-            value={settings.activeProviderId ?? ''}
+            value={modelChoiceValue(settings.activeProviderId, settings.activeFlowId)}
             onChange={(e) => onChangeProvider(e.target.value)}
           >
-            {settings.providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} · {p.model}
-              </option>
-            ))}
+            <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} withModel />
           </select>
         </label>
 

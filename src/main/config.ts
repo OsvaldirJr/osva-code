@@ -40,11 +40,17 @@ const DEFAULT_SETTINGS: AppSettings = {
     enabled: false
   },
   teams: [],
+  flows: [],
+  activeFlowId: null,
   automations: [],
   opencode: {
     url: 'http://127.0.0.1:4096',
     username: 'opencode',
     password: ''
+  },
+  plugins: {
+    serverUrl: process.env.OSVACODE_PLUGINS_URL?.trim() || '',
+    installed: []
   },
   terminal: {
     claudeCommand: 'claude',
@@ -74,10 +80,19 @@ export function loadSettings(): AppSettings {
         ...DEFAULT_SETTINGS,
         ...raw,
         teams: Array.isArray(raw.teams) ? raw.teams : [],
+        flows: Array.isArray(raw.flows) ? raw.flows : [],
+        activeFlowId: typeof raw.activeFlowId === 'string' ? raw.activeFlowId : null,
         automations: Array.isArray(raw.automations) ? raw.automations : [],
         opencode: {
           ...DEFAULT_SETTINGS.opencode,
           ...(raw.opencode ?? {})
+        },
+        plugins: {
+          serverUrl:
+            typeof raw.plugins?.serverUrl === 'string'
+              ? raw.plugins.serverUrl
+              : (DEFAULT_SETTINGS.plugins?.serverUrl ?? ''),
+          installed: Array.isArray(raw.plugins?.installed) ? raw.plugins.installed : []
         },
         terminal: {
           ...DEFAULT_SETTINGS.terminal!,

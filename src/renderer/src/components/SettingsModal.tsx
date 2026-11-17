@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { AppSettings, McpServerConfig, McpServerStatus, ProviderConfig, TerminalToolStatus } from '../../../shared/types'
-import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users, Bot, TerminalSquare } from 'lucide-react'
+import { Plus, Brain, Plug, MessageSquare, Search, Key, Sparkles, X, Cloud, Users, Bot, Workflow, TerminalSquare } from 'lucide-react'
 import { AgentTeamsPanel } from './AgentTeamsPanel'
+import { ModelFlowsPanel } from './ModelFlowsPanel'
 
-type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes' | 'opencode' | 'terminal'
+type Tab = 'modelos' | 'mcp' | 'comportamento' | 'sync' | 'equipes' | 'fluxos' | 'opencode' | 'terminal'
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
@@ -20,10 +21,16 @@ export function SettingsModal({
 }): JSX.Element {
   const [draft, setDraft] = useState<AppSettings>(() => ({
     ...structuredClone(settings),
+    flows: settings.flows ?? [],
+    activeFlowId: settings.activeFlowId ?? null,
     opencode: {
       url: settings.opencode?.url || 'http://127.0.0.1:4096',
       username: settings.opencode?.username || 'opencode',
       password: settings.opencode?.password ?? ''
+    },
+    plugins: {
+      serverUrl: settings.plugins?.serverUrl ?? '',
+      installed: settings.plugins?.installed ?? []
     },
     terminal: {
       claudeCommand: settings.terminal?.claudeCommand ?? 'claude',
@@ -125,7 +132,7 @@ export function SettingsModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal ${tab === 'fluxos' ? 'modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Configurações</h2>
           <button className="ghost" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -162,6 +169,13 @@ export function SettingsModal({
             <Users size={14} /> Equipes
           </button>
           <button
+            className={tab === 'fluxos' ? 'active' : ''}
+            onClick={() => setTab('fluxos')}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Workflow size={14} /> Fluxos
+          </button>
+          <button
             className={tab === 'opencode' ? 'active' : ''}
             onClick={() => setTab('opencode')}
             style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
@@ -177,12 +191,13 @@ export function SettingsModal({
           </button>
         </nav>
 
-        <div className="modal-body">
+        <div className={`modal-body ${tab === 'fluxos' ? 'modal-body-flow' : ''}`}>
           {tab === 'modelos' && (
             <>
               <p className="help">
                 Qualquer endpoint compatível com a API da OpenAI funciona: Ollama local
                 (http://localhost:11434/v1), vLLM, LM Studio, OpenRouter, OpenAI, etc.
+                Os fluxos da aba Fluxos entram na mesma lista: no chat você escolhe um modelo ou um fluxo inteiro.
               </p>
               {draft.providers.map((p) => (
                 <div className="card" key={p.id}>
@@ -241,8 +256,8 @@ export function SettingsModal({
                       <input
                         type="radio"
                         name="active-provider"
-                        checked={draft.activeProviderId === p.id}
-                        onChange={() => setDraft((d) => ({ ...d, activeProviderId: p.id }))}
+                        checked={!draft.activeFlowId && draft.activeProviderId === p.id}
+                        onChange={() => setDraft((d) => ({ ...d, activeProviderId: p.id, activeFlowId: null }))}
                       />
                       Usar este modelo
                     </label>
@@ -285,6 +300,31 @@ export function SettingsModal({
 
           {tab === 'mcp' && (
             <>
+              <div className="card">
+                <strong>Servidor de plugins</strong>
+                <p className="help">
+                  Endereço do servidor que distribui o catálogo de plugins para o OsvaCode. Por enquanto
+                  não há plugins publicados, mas você já pode deixar a URL configurada ou gerenciar pela
+                  seção <em>Plugins</em> do menu lateral.
+                </p>
+                <label>
+                  URL do servidor de plugins
+                  <input
+                    value={draft.plugins?.serverUrl ?? ''}
+                    placeholder="https://plugins.seudominio.com"
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        plugins: {
+                          serverUrl: e.target.value,
+                          installed: d.plugins?.installed ?? []
+                        }
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+
               <p className="help">
                 Servidores MCP dão ferramentas ao modelo (arquivos, web, bancos de dados…). Informe
                 o comando que inicia o servidor — por exemplo,{' '}
@@ -415,6 +455,7 @@ export function SettingsModal({
           )}
 
           {tab === 'equipes' && <AgentTeamsPanel draft={draft} setDraft={setDraft} />}
+          {tab === 'fluxos' && <ModelFlowsPanel draft={draft} setDraft={setDraft} />}
 
           {tab === 'sync' && (
             <>

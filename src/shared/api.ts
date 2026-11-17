@@ -11,6 +11,7 @@ import type {
   OpenCodeModel,
   OpenCodeNotice,
   PickedAttachment,
+  PluginCatalogResult,
   ChatSendOptions,
   McpServerStatus,
   PermissionDecision,
@@ -18,6 +19,7 @@ import type {
   SlashCommand,
   SyncMessage,
   SyncPushPayload,
+  WorkspaceDocument,
   TerminalEvent,
   TerminalSessionInfo,
   TerminalTarget,
@@ -94,6 +96,12 @@ export interface OsvaCodeApi {
     previous: string | null,
     hunk: { removed: string[]; added: string[]; after: string | null }
   ) => Promise<FileChange | null>
+  /** Lista os documentos e pastas da pasta de trabalho. */
+  listWorkspaceFiles: (folder: string) => Promise<WorkspaceDocument[]>
+  /** Abre um arquivo (ou a pasta inteira) no VS Code como editor padrão. */
+  openInVscode: (folder: string, relativePath?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Consulta o catálogo de plugins no servidor configurado. */
+  fetchPluginsCatalog: (serverUrl?: string) => Promise<PluginCatalogResult>
   /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */
   navigateBrowser: (url: string) => Promise<BrowserState>
   /** Abre um arquivo da pasta de trabalho atual no navegador embutido. */
