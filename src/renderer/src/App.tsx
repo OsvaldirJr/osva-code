@@ -15,7 +15,7 @@ import type {
   RemoteChatStub,
   SlashCommand
 } from '../../shared/types'
-import { AUTOMATION_HOOK_PORT } from '../../shared/types'
+import { AUTOMATION_HOOK_PORT, modelChoiceValue, parseModelChoice } from '../../shared/types'
 import type { DesignKind } from '../../shared/design'
 import { DESIGN_KINDS } from '../../shared/design'
 import { AgentCard } from './components/AgentCard'
@@ -23,9 +23,11 @@ import { MessageView } from './components/MessageView'
 import { ToolCallCard } from './components/ToolCallCard'
 import { ErrorBubble } from './components/ErrorBubble'
 import { SettingsModal } from './components/SettingsModal'
+import { ModelChoiceOptions } from './components/ModelChoice'
 import { Sidebar } from './components/Sidebar'
 import { AutomationsPanel, HOOK_SOURCES, scheduleIsDue } from './components/AutomationsPanel'
 import { DesignPanel, type DesignDoc } from './components/DesignPanel'
+import { PluginsPanel } from './components/PluginsPanel'
 import { LoginScreen } from './components/LoginScreen'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SlashMenu, filterSlashCommands, slashQuery } from './components/SlashMenu'
@@ -33,7 +35,7 @@ import { Workbench, type CommandRun, type ReviewHunk, type WorkbenchTab } from '
 import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
-  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight
+  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight, Code2
 } from 'lucide-react'
 
 export type UiMessage =
@@ -355,7 +357,7 @@ export default function App(): JSX.Element {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
   // aba ativa do menu: 'chat' (conversa simples) ou 'dev' (com pasta de trabalho)
   const [tab, setTab] = useState<ConversationKind>('chat')
-  const [section, setSection] = useState<'chats' | 'automations' | 'design'>('chats')
+  const [section, setSection] = useState<'chats' | 'automations' | 'design' | 'plugins'>('chats')
   const [designs, setDesigns] = useState<DesignDoc[]>([])
   const [designId, setDesignId] = useState<string | null>(null)
   const [designStatus, setDesignStatus] = useState('')
@@ -1203,12 +1205,13 @@ export default function App(): JSX.Element {
     }
 
     const history = toChatMessages([...priorMessages, userMessage])
+    const flowId = settingsRef.current?.activeFlowId || undefined
 
     const requestId = crypto.randomUUID()
     chatRequestId.current = requestId
     chatTargets.current.set(requestId, conversationId)
     generatingConversation.current = conversationId
-    void window.api.sendChat(requestId, history, { folder, mode, teamId })
+    void window.api.sendChat(requestId, history, { folder, mode, teamId: flowId ? null : teamId, flowId })
   }, [input, busy, active, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel])
 
   const toggleRecording = useCallback(() => {
@@ -1252,13 +1255,19 @@ export default function App(): JSX.Element {
     patchConversation(active.id, () => trimmed, false)
 
     const history = toChatMessages(trimmed)
+    const flowId = settingsRef.current?.activeFlowId || undefined
 
     setBusy(true)
     const requestId = crypto.randomUUID()
     chatRequestId.current = requestId
     chatTargets.current.set(requestId, active.id)
     generatingConversation.current = active.id
-    void window.api.sendChat(requestId, history, { folder: active.folder, mode, teamId: active.teamId })
+    void window.api.sendChat(requestId, history, {
+      folder: active.folder,
+      mode,
+      teamId: flowId ? null : active.teamId,
+      flowId
+    })
   }, [active, busy, patchConversation, mode])
 
   // mantém refs atualizadas para uso dentro do handler de eventos (evita closures velhas)
@@ -1525,7 +1534,8 @@ export default function App(): JSX.Element {
       void window.api.sendChat(requestId, [{ role: 'user', content: text }], {
         folder: folder ?? undefined,
         mode,
-        providerId: automation.providerId || undefined
+        providerId: automation.flowId ? undefined : automation.providerId || undefined,
+        flowId: automation.flowId || undefined
       })
       const current = settingsRef.current
       if (current) {
@@ -1614,9 +1624,14 @@ export default function App(): JSX.Element {
   )
 
   const changeProvider = useCallback(
-    (providerId: string) => {
+    (value: string) => {
       if (!settings) return
-      const next = { ...settings, activeProviderId: providerId }
+      const choice = parseModelChoice(value)
+      const next = {
+        ...settings,
+        activeProviderId: choice.flowId ? settings.activeProviderId : choice.providerId,
+        activeFlowId: choice.flowId
+      }
       setSettings(next)
       void window.api.saveSettings(next).then(setMcpStatus)
     },
@@ -1624,6 +1639,12 @@ export default function App(): JSX.Element {
   )
 
   const activeProvider = settings?.providers.find((p) => p.id === settings.activeProviderId)
+  const activeFlow = settings?.activeFlowId
+    ? ((settings.flows ?? []).find((item) => item.id === settings.activeFlowId) ?? null)
+    : null
+  const modelMenuLabel = activeFlow
+    ? activeFlow.name.trim() || 'Fluxo sem nome'
+    : activeProvider?.name || 'Modelo'
   const openCodeModel =
     (activeKind === 'opencode' ? active?.opencodeModel : null) ??
     (tab === 'opencode' ? (ocPreferredModel ?? ocDefaultModel) : null)
@@ -1687,7 +1708,12 @@ export default function App(): JSX.Element {
 
       <main className="main">
         <div className="chat-column">
-        {section === 'design' ? (
+        {section === 'plugins' && settings ? (
+          <PluginsPanel
+            config={settings.plugins ?? { serverUrl: '', installed: [] }}
+            onSaveConfig={(plugins) => persistSettings({ ...settings, plugins })}
+          />
+        ) : section === 'design' ? (
           <DesignPanel
             designs={designs}
             activeId={designId}
@@ -1731,7 +1757,9 @@ export default function App(): JSX.Element {
           <AutomationsPanel
             automations={settings.automations ?? []}
             providers={settings.providers}
+            flows={settings.flows ?? []}
             activeProviderId={settings.activeProviderId}
+            activeFlowId={settings.activeFlowId}
             mcpStatus={mcpStatus}
             userName={session.user.name}
             hookPort={hookPort}
@@ -1771,7 +1799,12 @@ export default function App(): JSX.Element {
           <div className="chat-header">
             <span className="chat-title">{active.title}</span>
             <div className="chat-header-actions">
-              {activeKind !== 'opencode' && (settings?.teams?.length ?? 0) > 0 && (
+              {activeKind !== 'opencode' && activeFlow && (
+                <span className="team-path" title="O fluxo escolhido na lista de modelos">
+                  Fluxo · {activeFlow.name.trim() || 'Fluxo sem nome'}
+                </span>
+              )}
+              {activeKind !== 'opencode' && !activeFlow && (settings?.teams?.length ?? 0) > 0 && (
                 <label className="team-select">
                   Equipe
                   <select
@@ -1787,7 +1820,7 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               )}
-              {activeKind !== 'opencode' && activeTeam && activeTeam.steps.length > 0 && (
+              {activeKind !== 'opencode' && !activeFlow && activeTeam && activeTeam.steps.length > 0 && (
                 <span className="team-path" title="Ordem dos modelos nesta tarefa">
                   {activeTeam.steps.map((step, index) => {
                     const provider = settings?.providers.find((p) => p.id === step.providerId)
@@ -1811,6 +1844,37 @@ export default function App(): JSX.Element {
                   <NotebookPen size={14} /> Projeto
                 </span>
               </button>
+            )}
+            {active.folder && (
+              <>
+                <button
+                  className={`folder-chip ${workbenchOpen && workbenchTab === 'files' ? 'active' : ''}`}
+                  title="Listar documentos da pasta"
+                  onClick={() => {
+                    if (workbenchOpen && workbenchTab === 'files') {
+                      setWorkbenchOpen(false)
+                    } else {
+                      setWorkbenchTab('files')
+                      setWorkbenchOpen(true)
+                    }
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <FileText size={14} /> Documentos
+                  </span>
+                </button>
+                <button
+                  className="folder-chip"
+                  title="Abrir pasta no VS Code (padrão)"
+                  onClick={() => {
+                    if (active.folder) void window.api.openInVscode(active.folder)
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Code2 size={14} /> VS Code
+                  </span>
+                </button>
+              </>
             )}
             {(activeKind === 'dev' || activeKind === 'opencode') && (
               <button
@@ -2156,20 +2220,25 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               ) : (
-                settings && settings.providers.length > 0 && (
-                <label className="composer-model" title={activeProvider ? `${activeProvider.name} · ${activeProvider.model}` : 'Modelo'}>
-                  <span>{activeProvider?.name ?? 'Modelo'}</span>
+                settings && (settings.providers.length > 0 || (settings.flows ?? []).length > 0) && (
+                <label
+                  className="composer-model"
+                  title={
+                    activeFlow
+                      ? activeFlow.name
+                      : activeProvider
+                        ? `${activeProvider.name} · ${activeProvider.model}`
+                        : 'Modelo'
+                  }
+                >
+                  <span>{modelMenuLabel}</span>
                   <ChevronDown size={14} />
                   <select
-                    value={settings.activeProviderId ?? ''}
+                    value={modelChoiceValue(settings.activeProviderId, settings.activeFlowId)}
                     onChange={(e) => changeProvider(e.target.value)}
                     disabled={busy}
                   >
-                    {settings.providers.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
+                    <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} />
                   </select>
                 </label>
                 )
@@ -2244,13 +2313,15 @@ export default function App(): JSX.Element {
               <UsageOrb
                 usage={active?.usage}
                 open={usageOpen}
-                modelName={tab === 'opencode' ? (openCodeModel?.name ?? 'OpenCode') : (activeProvider?.name ?? 'Modelo')}
+                modelName={tab === 'opencode' ? (openCodeModel?.name ?? 'OpenCode') : modelMenuLabel}
                 modelId={
                   tab === 'opencode'
                     ? openCodeModel
                       ? `${openCodeModel.providerID}/${openCodeModel.id}`
                       : ''
-                    : (activeProvider?.model ?? '')
+                    : activeFlow
+                      ? 'fluxo'
+                      : (activeProvider?.model ?? '')
                 }
                 onToggle={() => setUsageOpen((open) => !open)}
               />
@@ -2262,6 +2333,8 @@ export default function App(): JSX.Element {
         </div>
         {section === 'chats' && workbenchOpen && activeId && activeKind !== 'opencode' && (
           <Workbench
+            folder={active?.folder}
+            onPickFolder={() => void changeActiveFolder()}
             changes={fileChanges[activeId] ?? []}
             artifacts={artifacts[activeId] ?? []}
             activeArtifactId={activeArtifactId}

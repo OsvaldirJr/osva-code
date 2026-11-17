@@ -64,6 +64,10 @@ const api: OsvaCodeApi = {
   revertWorkspace: (folder, path, previous) => ipcRenderer.invoke('workspace:revert', folder, path, previous),
   revertHunk: (folder, path, previous, hunk) =>
     ipcRenderer.invoke('workspace:revert-hunk', folder, path, previous, hunk),
+  listWorkspaceFiles: (folder) => ipcRenderer.invoke('workspace:list-files', folder),
+  openInVscode: (folder, relativePath) =>
+    ipcRenderer.invoke('workspace:open-vscode', folder, relativePath),
+  fetchPluginsCatalog: (serverUrl) => ipcRenderer.invoke('plugins:catalog', serverUrl),
   navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
   openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),
   browserCommand: (command) => ipcRenderer.invoke('browser:command', command),

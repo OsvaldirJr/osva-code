@@ -2,11 +2,33 @@ import { spawn } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'path'
 import { changeBetween } from './changes'
-import type { FileChange } from '../shared/types'
+import type { FileChange, WorkspaceDocument } from '../shared/types'
 
-const SKIP = new Set(['node_modules', '.git', 'dist', 'out', '.next', 'coverage', 'vendor', '__pycache__'])
+const SKIP = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  'coverage',
+  '.cache',
+  '.osvacode',
+  'venv',
+  '.venv',
+  'vendor',
+  '__pycache__'
+])
 const MAX_MATCHES = 40
 const MAX_FILE_BYTES = 300_000
+const MAX_LIST_ENTRIES = 500
+const MAX_LIST_DEPTH = 5
+
+const VSCODE_CLI_PATHS = [
+  '/usr/local/bin/code',
+  '/opt/homebrew/bin/code',
+  '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'
+]
 
 export interface HunkEdit {
   removed: string[]
@@ -151,5 +173,146 @@ export function runInFolder(
       clearTimeout(timer)
       resolvePromise({ ok: false, output: err.message })
     })
+  })
+}
+
+export function listWorkspaceFiles(folder: string): WorkspaceDocument[] {
+  if (!folder || !existsSync(folder)) return []
+  const items: WorkspaceDocument[] = []
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MAX_LIST_DEPTH || items.length >= MAX_LIST_ENTRIES) return
+    let entries: string[] = []
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    const sorted = entries
+      .filter((name) => !name.startsWith('.') && !SKIP.has(name))
+      .sort((a, b) => a.localeCompare(b))
+
+    const dirs: string[] = []
+    const files: string[] = []
+    for (const name of sorted) {
+      const abs = resolve(dir, name)
+      try {
+        const info = statSync(abs)
+        if (info.isDirectory()) dirs.push(name)
+        else if (info.isFile()) files.push(name)
+      } catch {
+        // ignora entradas inacessíveis
+      }
+    }
+
+    for (const name of dirs) {
+      if (items.length >= MAX_LIST_ENTRIES) return
+      const abs = resolve(dir, name)
+      try {
+        const info = statSync(abs)
+        items.push({
+          path: relativePath(folder, abs),
+          name,
+          kind: 'folder',
+          size: 0,
+          updatedAt: info.mtimeMs
+        })
+        walk(abs, depth + 1)
+      } catch {
+        // ignora
+      }
+    }
+
+    for (const name of files) {
+      if (items.length >= MAX_LIST_ENTRIES) return
+      const abs = resolve(dir, name)
+      try {
+        const info = statSync(abs)
+        items.push({
+          path: relativePath(folder, abs),
+          name,
+          kind: 'file',
+          size: info.size,
+          updatedAt: info.mtimeMs
+        })
+      } catch {
+        // ignora
+      }
+    }
+  }
+
+  walk(folder, 1)
+  return items
+}
+
+export function openInVscode(
+  folder: string,
+  filePath?: string
+): Promise<{ ok: boolean; error?: string }> {
+  const root = resolve(folder)
+  if (!existsSync(root)) {
+    return Promise.resolve({ ok: false, error: 'Pasta de trabalho não encontrada.' })
+  }
+  const target = filePath?.trim() ? resolveInside(root, filePath.trim()) : root
+  if (!target || !existsSync(target)) {
+    return Promise.resolve({ ok: false, error: 'Documento não encontrado na pasta de trabalho.' })
+  }
+
+  const cliBin = VSCODE_CLI_PATHS.find((candidate) => existsSync(candidate))
+  if (cliBin) {
+    const args = target === root ? [root] : [root, target]
+    return new Promise((resolvePromise) => {
+      const child = spawn(cliBin, args, { detached: true, stdio: 'ignore' })
+      child.on('error', (err) => resolvePromise({ ok: false, error: err.message }))
+      child.unref()
+      resolvePromise({ ok: true })
+    })
+  }
+
+  if (process.platform === 'darwin') {
+    return new Promise((resolvePromise) => {
+      const args =
+        target === root
+          ? ['-a', 'Visual Studio Code', root]
+          : ['-a', 'Visual Studio Code', target]
+      const child = spawn('open', args)
+      let stderr = ''
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8')
+      })
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolvePromise({ ok: true })
+          return
+        }
+        const fallback = spawn('code', target === root ? [root] : [root, target], {
+          shell: true,
+          detached: true,
+          stdio: 'ignore'
+        })
+        fallback.on('error', () => {
+          resolvePromise({
+            ok: false,
+            error:
+              stderr.trim() ||
+              'Não foi possível abrir o VS Code. Verifique se o Visual Studio Code está instalado.'
+          })
+        })
+        fallback.unref()
+        resolvePromise({ ok: true })
+      })
+      child.on('error', (err) => resolvePromise({ ok: false, error: err.message }))
+    })
+  }
+
+  return new Promise((resolvePromise) => {
+    const child = spawn('code', target === root ? [root] : [root, target], {
+      shell: true,
+      detached: true,
+      stdio: 'ignore'
+    })
+    child.on('error', (err) => resolvePromise({ ok: false, error: err.message }))
+    child.unref()
+    resolvePromise({ ok: true })
   })
 }

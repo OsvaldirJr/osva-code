@@ -4,18 +4,23 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft,
   ArrowRight,
+  Code2,
   ExternalLink,
   FileDiff,
+  FileText,
+  Folder,
+  FolderOpen,
   Globe,
   RotateCw,
+  Search,
   Square,
   TerminalSquare,
   X
 } from 'lucide-react'
-import type { BrowserState, DiffLine, FileChange } from '../../../shared/types'
+import type { BrowserState, DiffLine, FileChange, WorkspaceDocument } from '../../../shared/types'
 import { artifactFromChange, type Artifact } from '../artifacts'
 
-export type WorkbenchTab = 'changes' | 'artifacts' | 'browser' | 'terminal'
+export type WorkbenchTab = 'files' | 'changes' | 'artifacts' | 'browser' | 'terminal'
 
 export interface CommandRun {
   command: string
@@ -63,6 +68,8 @@ const EMPTY_BROWSER: BrowserState = {
 }
 
 export function Workbench({
+  folder,
+  onPickFolder,
   changes,
   artifacts,
   activeArtifactId,
@@ -78,6 +85,8 @@ export function Workbench({
   onRevertChange,
   onRevertHunk
 }: {
+  folder?: string
+  onPickFolder?: () => void
   changes: FileChange[]
   artifacts: Artifact[]
   activeArtifactId: string | null
@@ -98,7 +107,39 @@ export function Workbench({
   const [draftUrl, setDraftUrl] = useState('')
   const [urlFocused, setUrlFocused] = useState(false)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [documents, setDocuments] = useState<WorkspaceDocument[]>([])
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docFilter, setDocFilter] = useState('')
+  const [vscodeNotice, setVscodeNotice] = useState<string | null>(null)
   const embedded = typeof window.api?.setBrowserBounds === 'function'
+
+  const refreshDocuments = (): void => {
+    if (!folder || typeof window.api?.listWorkspaceFiles !== 'function') {
+      setDocuments([])
+      return
+    }
+    setDocsLoading(true)
+    void window.api
+      .listWorkspaceFiles(folder)
+      .then(setDocuments)
+      .finally(() => setDocsLoading(false))
+  }
+
+  useEffect(() => {
+    if (tab === 'files') {
+      refreshDocuments()
+    }
+  }, [folder, tab, changes.length])
+
+  const handleOpenVscode = (relativePath?: string): void => {
+    if (!folder || typeof window.api?.openInVscode !== 'function') return
+    setVscodeNotice(null)
+    void window.api.openInVscode(folder, relativePath).then((res) => {
+      if (!res.ok && res.error) {
+        setVscodeNotice(res.error)
+      }
+    })
+  }
 
   useEffect(() => {
     if (changes.length === 0) {
@@ -160,6 +201,13 @@ export function Workbench({
       <div className="workbench-top">
         <div className="workbench-tabs" role="tablist">
           <button
+            className={tab === 'files' ? 'active' : ''}
+            onClick={() => onTab('files')}
+            title="Listar documentos da pasta e abrir no VS Code"
+          >
+            <FileText size={14} /> Documentos
+          </button>
+          <button
             className={tab === 'changes' ? 'active' : ''}
             onClick={() => onTab('changes')}
           >
@@ -185,6 +233,126 @@ export function Workbench({
           <X size={15} />
         </button>
       </div>
+
+      {tab === 'files' && (
+        <div className="workbench-body">
+          {!folder ? (
+            <div className="workbench-empty">
+              <p>Escolha uma pasta de trabalho para listar os documentos e abri-los no VS Code.</p>
+              {onPickFolder && (
+                <button
+                  type="button"
+                  className="folder-chip"
+                  style={{ marginTop: '12px' }}
+                  onClick={onPickFolder}
+                >
+                  <FolderOpen size={14} /> Escolher pasta
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="docs-toolbar">
+                <div className="project-search docs-search">
+                  <Search size={13} />
+                  <input
+                    value={docFilter}
+                    placeholder="Filtrar documentos da pasta…"
+                    onChange={(e) => setDocFilter(e.target.value)}
+                  />
+                  {docFilter && (
+                    <button
+                      type="button"
+                      className="project-search-clear"
+                      onClick={() => setDocFilter('')}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="docs-action-btn"
+                  title="Atualizar lista de documentos"
+                  onClick={refreshDocuments}
+                >
+                  <RotateCw size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="docs-action-btn primary"
+                  title="Abrir pasta inteira no VS Code"
+                  onClick={() => handleOpenVscode()}
+                >
+                  <Code2 size={13} /> VS Code
+                </button>
+              </div>
+              {vscodeNotice && <div className="docs-notice">{vscodeNotice}</div>}
+              {docsLoading ? (
+                <div className="workbench-empty">Carregando documentos da pasta…</div>
+              ) : (
+                (() => {
+                  const needle = docFilter.trim().toLowerCase()
+                  const visibleDocs = needle
+                    ? documents.filter(
+                        (doc) =>
+                          doc.path.toLowerCase().includes(needle) ||
+                          doc.name.toLowerCase().includes(needle)
+                      )
+                    : documents
+                  if (visibleDocs.length === 0) {
+                    return (
+                      <div className="workbench-empty">
+                        {needle
+                          ? 'Nenhum documento encontrado com esse filtro.'
+                          : 'Nenhum documento encontrado nesta pasta.'}
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="docs-list">
+                      {visibleDocs.map((doc) => (
+                        <div
+                          key={doc.path}
+                          className={`docs-item ${doc.kind}`}
+                          title={`Abrir ${doc.path} no VS Code`}
+                          onClick={() => handleOpenVscode(doc.path)}
+                        >
+                          {doc.kind === 'folder' ? (
+                            <Folder size={14} className="docs-icon folder" />
+                          ) : (
+                            <FileText size={14} className="docs-icon file" />
+                          )}
+                          <div className="docs-item-text">
+                            <span className="docs-item-name">{doc.name}</span>
+                            {doc.path !== doc.name && (
+                              <span className="docs-item-path">{doc.path}</span>
+                            )}
+                          </div>
+                          {doc.kind === 'file' && (
+                            <span className="docs-item-size">{formatBytes(doc.size)}</span>
+                          )}
+                          <button
+                            type="button"
+                            className="docs-open-btn"
+                            title="Abrir no VS Code (padrão)"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleOpenVscode(doc.path)
+                            }}
+                          >
+                            <Code2 size={12} /> Abrir
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {tab === 'changes' && (
         <div className="workbench-body">
@@ -229,6 +397,14 @@ export function Workbench({
                           Pré-visualizar
                         </button>
                       )}
+                      {folder && selected.kind !== 'deleted' && (
+                        <button
+                          title="Abrir no VS Code (padrão)"
+                          onClick={() => handleOpenVscode(selected.path)}
+                        >
+                          VS Code
+                        </button>
+                      )}
                       {embedded && selected.kind !== 'deleted' && (
                         <button
                           onClick={() => {
@@ -236,7 +412,7 @@ export function Workbench({
                             void window.api.openBrowserFile(selected.path).then(setBrowser)
                           }}
                         >
-                          Abrir
+                          Navegador
                         </button>
                       )}
                     </span>
@@ -445,4 +621,10 @@ function kindLabel(kind: FileChange['kind']): string {
   if (kind === 'added') return 'novo'
   if (kind === 'deleted') return 'removido'
   return 'editado'
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }

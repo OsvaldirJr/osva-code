@@ -86,6 +86,54 @@ export interface AgentTeam {
   steps: AgentStep[]
 }
 
+/** Prefixo na lista de modelos quando o valor escolhido é um fluxo, não um provedor. */
+export const FLOW_PREFIX = 'flow:'
+
+export function modelChoiceValue(
+  activeProviderId: string | null,
+  activeFlowId: string | null | undefined
+): string {
+  return activeFlowId ? `${FLOW_PREFIX}${activeFlowId}` : (activeProviderId ?? '')
+}
+
+export function parseModelChoice(value: string): { providerId: string | null; flowId: string | null } {
+  if (value.startsWith(FLOW_PREFIX)) {
+    const flowId = value.slice(FLOW_PREFIX.length)
+    return { providerId: null, flowId: flowId || null }
+  }
+  return { providerId: value || null, flowId: null }
+}
+
+/** Bloco de um fluxo visual. A entrada recebe o pedido; a decisão escolhe a rota; o modelo responde. */
+export type FlowNodeKind = 'entry' | 'decide' | 'model'
+
+export interface FlowNode {
+  id: string
+  kind: FlowNodeKind
+  name: string
+  x: number
+  y: number
+  providerId: string
+  /** Na decisão, orienta a classificação. No modelo, é o papel desta etapa. */
+  instruction: string
+}
+
+/** Ligação entre blocos. `when` é o texto da rota que a decisão precisa escolher. */
+export interface FlowEdge {
+  id: string
+  from: string
+  to: string
+  when: string
+}
+
+/** Caminho nomeado. O usuário escolhe este fluxo no lugar de um modelo único. */
+export interface ModelFlow {
+  id: string
+  name: string
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+}
+
 export interface AuthUser {
   id: string
   name: string
@@ -100,6 +148,44 @@ export interface AuthSession {
   user: AuthUser
 }
 
+export interface PluginItem {
+  id: string
+  name: string
+  description: string
+  version: string
+  author?: string
+  category?: string
+  /** Comando opcional de servidor MCP fornecido pelo plugin. */
+  mcp?: {
+    command: string
+    args: string[]
+    env?: Record<string, string>
+  }
+  enabled?: boolean
+}
+
+export interface PluginsConfig {
+  /** URL do servidor de catálogo de plugins. */
+  serverUrl: string
+  /** Plugins instalados neste computador. */
+  installed: PluginItem[]
+}
+
+export interface PluginCatalogResult {
+  online: boolean
+  message: string
+  plugins: PluginItem[]
+}
+
+export interface WorkspaceDocument {
+  /** Caminho relativo à pasta de trabalho, com barras /. */
+  path: string
+  name: string
+  kind: 'file' | 'folder'
+  size: number
+  updatedAt: number
+}
+
 export interface AppSettings {
   providers: ProviderConfig[]
   activeProviderId: string | null
@@ -112,10 +198,16 @@ export interface AppSettings {
   openWebUi: OpenWebUiConfig
   /** Equipes de agentes para tarefas que precisam de mais de um modelo. */
   teams: AgentTeam[]
+  /** Fluxos visuais. Cada um escolhe o modelo conforme o pedido. */
+  flows: ModelFlow[]
+  /** Fluxo ativo. Quando preenchido, vale no lugar do modelo único. */
+  activeFlowId: string | null
   /** Tarefas salvas que o usuário dispara de novo pelo menu Automatização. */
   automations: Automation[]
   /** Conexão com o servidor OpenCode desta máquina. */
   opencode: OpenCodeConfig
+  /** Configuração do servidor de plugins e lista de plugins instalados. */
+  plugins?: PluginsConfig
 }
 
 export type AutomationSchedule = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly'
@@ -174,6 +266,8 @@ export interface Automation {
   enabled?: boolean
   /** Modelo desta automatização. Vazio = o modelo ativo do app. */
   providerId?: string | null
+  /** Fluxo desta automatização. Se preenchido, vale no lugar do modelo. */
+  flowId?: string | null
   triggers?: AutomationTrigger[]
   runs?: AutomationRun[]
 }
@@ -255,6 +349,8 @@ export interface ChatSendOptions {
   teamId?: string | null
   /** Modelo desta mensagem. Vazio = o modelo ativo do app. */
   providerId?: string | null
+  /** Fluxo desta mensagem. Quando preenchido, o caminho visual escolhe o modelo. */
+  flowId?: string | null
   /** Design aberto no canvas. Liga a ferramenta design_canvas. */
   design?: import('./design').DesignContext
 }
