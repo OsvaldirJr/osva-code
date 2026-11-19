@@ -1,7 +1,7 @@
 # OsvaCode
 
-Aplicativo desktop (macOS) para conversar com o **seu modelo de IA próprio** e com outros modelos,
-com suporte a **servidores MCP** (ferramentas/plugins) e **respostas humanizadas**.
+Aplicativo desktop (macOS e Windows) para conversar com o **seu modelo de IA próprio** e com outros modelos,
+com suporte a **servidores MCP** (ferramentas/plugins), **terminal integrado** e **respostas humanizadas**.
 
 ## Funcionalidades
 
@@ -9,8 +9,23 @@ com suporte a **servidores MCP** (ferramentas/plugins) e **respostas humanizadas
   vLLM, OpenRouter, OpenAI, etc. Troque de modelo pelo seletor do campo de mensagem ou pelo
   rodapé do menu. A bolinha ao lado do campo mostra o uso de tokens da conversa.
 - 🗂️ **Menu lateral** — Nova conversa, Pesquisa, Automatização e Design. O menu pode ser
-  minimizado para uma faixa de ícones. As conversas ficam em Chat, DevMode ou OpenCode;
-  as da mesma pasta ficam juntas.
+  minimizado para uma faixa de ícones. Chat, DevMode e OpenCode aparecem só como ícones.
+  As conversas da mesma pasta ficam juntas. Uma conversa feita no Claude, no Copilot ou no
+  Shell continua ligada a essa sessão: ao selecioná-la de novo, o terminal abre com o
+  contexto dela.
+- 📁 **Painel** — o botão **Painel** abre o card na esquerda e recolhe o menu de conversas.
+  A primeira aba é **Documentos**. A borda entre o painel e o chat pode ser arrastada, e a
+  largura fica gravada. Dentro do card ficam Documentos, VS Code, a pasta de trabalho e o
+  Terminal.
+- 📝 **Documentos** — a árvore da pasta expande e recolhe no lugar. O arquivo abre dentro do
+  aplicativo, no editor do VS Code (Monaco), com o tema escuro e as cores da linguagem.
+  Dá para editar e gravar com **Salvar** ou Ctrl+S. Imagem continua imagem. Arquivo maior
+  que 2 MB abre só o começo, somente para leitura.
+- 🖥️ **Terminal integrado** — Shell, Claude Code e Copilot rodam no lugar do chat. No Windows
+  o processo sobe por ConPTY (`node-pty`); no macOS e no Linux, pelo ponte Python. A sessão
+  fica presa à conversa.
+- 📊 **Rodapé** — faixa na largura da janela. À esquerda, o estado dos modelos de terminal:
+  Claude, Cursor, Copilot e Gemini. Cada um mostra **em uso**, **sem uso** ou **não instalado**.
 - 📎 **Anexos** — o botão **+** envia imagem, arquivo ou pasta. Imagens vão para modelos que
   enxergam; arquivos e pastas entram como texto, com limite de tamanho. Segredos (`.env`, chaves)
   são listados sem o conteúdo.
@@ -47,6 +62,9 @@ npm run dev        # desenvolvimento (recarrega ao salvar)
 npm run build      # build de produção
 npm run package    # gera o app .dmg/.app para macOS
 ```
+
+No Windows, `npm run dev` usa o terminal do sistema para o Claude e o Copilot. O instalador
+gerado por `npm run package` continua sendo o do macOS.
 
 ## Servindo o seu modelo próprio
 
@@ -106,13 +124,16 @@ src/
 │   ├── mcp.ts       # conexão com servidores MCP (SDK oficial, stdio)
 │   ├── automationHooks.ts # webhooks locais das automações
 │   ├── opencode.ts  # cliente da aba OpenCode (sessão, modelos e eventos)
+│   ├── terminal.ts  # terminal integrado (Claude, Copilot, Shell) e estado do rodapé
+│   ├── workspaceActions.ts # lista, leitura e gravação dos documentos da pasta
 │   ├── attach.ts    # leitura de imagem, arquivo e pasta anexados
 │   ├── slashCommands.ts # expansão dos comandos /
 │   ├── humanizer.ts # traduz eventos técnicos para linguagem simples
 │   └── config.ts    # settings.json em userData
 ├── preload/         # ponte segura (contextBridge) entre main e renderer
-├── renderer/        # interface React (chat, automações, design, configurações)
+├── renderer/        # interface React (chat, painel, documentos, automações, design)
 └── shared/          # tipos compartilhados, inclusive o documento do canvas
 ```
 
-As configurações ficam em `~/Library/Application Support/osvacode/settings.json`.
+As configurações ficam em `settings.json` na pasta de dados do Electron: no macOS,
+`~/Library/Application Support/osvacode/`; no Windows, `%APPDATA%\osvacode\`.

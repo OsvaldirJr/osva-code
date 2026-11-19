@@ -104,6 +104,7 @@ const api: OsvaCodeApi = {
   terminalStop: (sessionId) => ipcRenderer.invoke('terminal:stop', sessionId),
   terminalHistory: (sessionId) => ipcRenderer.invoke('terminal:history', sessionId),
   terminalList: () => ipcRenderer.invoke('terminal:list'),
+  cliUsage: () => ipcRenderer.invoke('cli:usage'),
   onTerminalEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, event: TerminalEvent): void => callback(event)
     ipcRenderer.on('terminal:event', listener)

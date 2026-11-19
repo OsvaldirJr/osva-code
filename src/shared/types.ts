@@ -46,6 +46,14 @@ export interface TerminalCliConfig {
   shellCommand: string
 }
 
+/** Uso dos modelos acessados pelo terminal: instalado e com sessão aberta. */
+export interface CliUsageStatus {
+  id: 'claude' | 'cursor' | 'copilot' | 'gemini'
+  label: string
+  installed: boolean
+  running: boolean
+}
+
 /** Binários detectados no PATH do sistema para o terminal integrado. */
 export interface TerminalToolStatus {
   claude: string | null

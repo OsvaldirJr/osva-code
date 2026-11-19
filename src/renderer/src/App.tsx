@@ -12,6 +12,7 @@ import type {
   AutomationHookEvent,
   AuthSession,
   ChatMessage,
+  CliUsageStatus,
   ComposerDestination,
   PickedAttachment,
   FileChange,
@@ -165,6 +166,23 @@ function openCodeModelKey(model: OpenCodeModel): string {
 
 function formatTokens(value: number): string {
   return new Intl.NumberFormat('pt-BR').format(value)
+}
+
+function UsageFooter({ items }: { items: CliUsageStatus[] }): JSX.Element {
+  return (
+    <div className="app-footer-usage" title="Modelos acessados pelo terminal">
+      {items.map((item) => {
+        const label = !item.installed ? 'não instalado' : item.running ? 'em uso' : 'sem uso'
+        return (
+          <span key={item.id} className={`app-footer-cli ${item.running ? 'on' : ''}`}>
+            <span className={`app-footer-cli-dot ${item.running ? 'on' : item.installed ? 'idle' : ''}`} />
+            <span className="app-footer-model">{item.label}</span>
+            <span className="app-footer-meta">{label}</span>
+          </span>
+        )
+      })}
+    </div>
+  )
 }
 
 function UsageOrb({
@@ -393,6 +411,7 @@ export default function App(): JSX.Element {
   const [designStatus, setDesignStatus] = useState('')
   const [hookPort, setHookPort] = useState(AUTOMATION_HOOK_PORT)
   const [usageOpen, setUsageOpen] = useState(false)
+  const [cliUsage, setCliUsage] = useState<CliUsageStatus[]>([])
   const usageRef = useRef<HTMLDivElement>(null)
   const [addOpen, setAddOpen] = useState(false)
   const addRef = useRef<HTMLDivElement>(null)
@@ -489,6 +508,20 @@ export default function App(): JSX.Element {
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`
   }, [input])
+
+  useEffect(() => {
+    const load = (): void => {
+      if (typeof window.api.cliUsage !== 'function') return
+      void window.api.cliUsage().then(setCliUsage).catch(() => setCliUsage([]))
+    }
+    load()
+    const timer = window.setInterval(load, 15000)
+    const stop = window.api.onTerminalEvent(() => load())
+    return () => {
+      window.clearInterval(timer)
+      stop()
+    }
+  }, [])
 
   useEffect(() => {
     void window.api.getSettings().then(setSettings)
@@ -1836,6 +1869,7 @@ export default function App(): JSX.Element {
 
   return (
     <div className="app">
+      <div className="app-body">
       {settings && (
         <Sidebar
           user={session.user}
@@ -2758,6 +2792,11 @@ export default function App(): JSX.Element {
           />
         )}
       </main>
+      </div>
+
+      <footer className="app-footer">
+        <UsageFooter items={cliUsage} />
+      </footer>
 
       {settingsOpen && settings && (
         <SettingsModal

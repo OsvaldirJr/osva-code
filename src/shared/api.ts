@@ -6,6 +6,7 @@ import type {
   AutomationHookEvent,
   ChatEventPayload,
   ChatMessage,
+  CliUsageStatus,
   FileChange,
   OpenCodeFileDiff,
   OpenCodeModel,
@@ -149,5 +150,6 @@ export interface OsvaCodeApi {
   terminalStop: (sessionId: string) => Promise<void>
   terminalHistory: (sessionId: string) => Promise<{ session: TerminalSessionInfo | null; buffer: string }>
   terminalList: () => Promise<TerminalSessionInfo[]>
+  cliUsage: () => Promise<CliUsageStatus[]>
   onTerminalEvent: (callback: (event: TerminalEvent) => void) => () => void
 }

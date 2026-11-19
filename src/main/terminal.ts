@@ -6,6 +6,7 @@ import { basename, join } from 'path'
 import { StringDecoder } from 'string_decoder'
 import type { IPty } from 'node-pty'
 import type {
+  CliUsageStatus,
   TerminalCliConfig,
   TerminalEvent,
   TerminalSessionInfo,
@@ -751,6 +752,59 @@ export function getTerminalHistory(sessionId: string): { session: TerminalSessio
   const session = sessions.get(sessionId)
   if (!session) return { session: null, buffer: '' }
   return { session: { ...session.info }, buffer: session.history }
+}
+
+function processRunning(image: string): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 4000
+    })
+    return out.toLowerCase().includes(image.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+export function listCliUsage(): CliUsageStatus[] {
+  const envPath = resolveShellPath()
+  const local = process.env.LOCALAPPDATA || ''
+  const tools = detectTerminalTools()
+  const sessions = listTerminalSessions()
+  const sessionOn = (target: TerminalTarget): boolean =>
+    sessions.some((item) => item.target === target && item.running)
+  const cursorInstalled = Boolean(
+    (local && existsSync(join(local, 'cursor-agent', 'cursor-agent.cmd'))) || findBinary('agent', envPath)
+  )
+  const geminiInstalled = Boolean(findBinary('gemini', envPath) || existsSync(join(homedir(), '.gemini')))
+  return [
+    {
+      id: 'claude',
+      label: 'Claude',
+      installed: Boolean(tools.claude),
+      running: sessionOn('claude') || processRunning('claude.exe')
+    },
+    {
+      id: 'cursor',
+      label: 'Cursor',
+      installed: cursorInstalled,
+      running: processRunning('agent.exe')
+    },
+    {
+      id: 'copilot',
+      label: 'Copilot',
+      installed: Boolean(tools.copilot || tools.gh),
+      running: sessionOn('copilot') || processRunning('copilot.exe')
+    },
+    {
+      id: 'gemini',
+      label: 'Gemini',
+      installed: geminiInstalled,
+      running: processRunning('gemini.exe')
+    }
+  ]
 }
 
 export function listTerminalSessions(): TerminalSessionInfo[] {

@@ -60,6 +60,7 @@ import { fetchPluginsCatalog, pluginMcpServers } from './plugins'
 import {
   closeAllTerminals,
   detectTerminalTools,
+  listCliUsage,
   getTerminalHistory,
   listTerminalSessions,
   resizeTerminalSession,
@@ -653,6 +654,7 @@ function registerIpc(): void {
     mainWindow.webContents.send('terminal:event', event)
   })
   ipcMain.handle('terminal:tools', () => detectTerminalTools())
+  ipcMain.handle('cli:usage', () => listCliUsage())
   ipcMain.handle(
     'terminal:start',
     (
