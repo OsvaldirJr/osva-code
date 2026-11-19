@@ -49,6 +49,10 @@ export function IntegratedTerminal({
 
   const sessionId = terminalSessionId(conversationKey, target)
   const effectiveCwd = folder || customCwd || null
+
+  useEffect(() => {
+    setCustomCwd(null)
+  }, [conversationKey])
   const currentSession = sessionsMap[sessionId] ?? null
   const isRunning = Boolean(currentSession?.running)
 

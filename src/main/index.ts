@@ -50,7 +50,9 @@ import {
 import {
   listWorkspaceFiles,
   openInVscode,
+  readWorkspaceFile,
   rejectWorkspaceHunk,
+  writeWorkspaceFile,
   restoreWorkspaceFile,
   type HunkEdit
 } from './workspaceActions'
@@ -296,6 +298,12 @@ function registerIpc(): void {
       rejectWorkspaceHunk(folder, filePath, previous, hunk)
   )
   ipcMain.handle('workspace:list-files', (_event, folder: string) => listWorkspaceFiles(folder))
+  ipcMain.handle('workspace:read-file', (_event, folder: string, relativePath: string) =>
+    readWorkspaceFile(folder, relativePath)
+  )
+  ipcMain.handle('workspace:write-file', (_event, folder: string, relativePath: string, text: string) => {
+    writeWorkspaceFile(folder, relativePath, text)
+  })
   ipcMain.handle('workspace:open-vscode', (_event, folder: string, relativePath?: string) =>
     openInVscode(folder, relativePath)
   )

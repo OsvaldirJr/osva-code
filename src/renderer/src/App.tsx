@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent
+} from 'react'
 import type {
   AppSettings,
   Automation,
@@ -38,7 +45,7 @@ import { IntegratedTerminal, terminalSessionId } from './components/IntegratedTe
 import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
-  FolderOpen, Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelRight, Code2, TerminalSquare
+  Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelLeft, TerminalSquare
 } from 'lucide-react'
 
 export type UiMessage =
@@ -324,6 +331,18 @@ function loadConversationsFor(userId: string): Conversation[] {
   }
 }
 
+const DOCS_WIDTH_KEY = 'osvacode.docs.width'
+
+function readDocsWidth(): number {
+  try {
+    const saved = Number(localStorage.getItem(DOCS_WIDTH_KEY))
+    if (Number.isFinite(saved)) return Math.min(Math.max(saved, 280), 960)
+  } catch {
+    // a largura volta ao padrão se o armazenamento estiver indisponível
+  }
+  return 420
+}
+
 export default function App(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
@@ -336,7 +355,10 @@ export default function App(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [projectPanelOpen, setProjectPanelOpen] = useState(false)
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes')
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('files')
+  const [docsWidth, setDocsWidth] = useState(readDocsWidth)
+  const docsWidthRef = useRef(docsWidth)
+  docsWidthRef.current = docsWidth
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>('shell')
   const [composerDestination, setComposerDestination] = useState<ComposerDestination>('model')
   const [runningTerminals, setRunningTerminals] = useState<string[]>([])
@@ -1771,6 +1793,34 @@ export default function App(): JSX.Element {
   const activeTeam = settings?.teams?.find((t) => t.id === active?.teamId) ?? null
   const messages = active?.messages ?? []
 
+  const documentsOpen =
+    section === 'chats' && workbenchOpen && tab !== 'opencode' && activeKind !== 'opencode'
+
+  const startDocsResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = docsWidthRef.current
+    const move = (ev: PointerEvent): void => {
+      const max = Math.max(280, window.innerWidth - 68 - 360)
+      const next = Math.min(Math.max(280, startWidth + ev.clientX - startX), max)
+      docsWidthRef.current = next
+      setDocsWidth(next)
+    }
+    const stop = (): void => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      document.body.classList.remove('docs-resizing')
+      try {
+        localStorage.setItem(DOCS_WIDTH_KEY, String(Math.round(docsWidthRef.current)))
+      } catch {
+        // a largura escolhida só não fica gravada
+      }
+    }
+    document.body.classList.add('docs-resizing')
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+
   if (session === undefined) {
     return <div className="login-screen">Carregando…</div>
   }
@@ -1811,9 +1861,18 @@ export default function App(): JSX.Element {
             const chosen = conversationsRef.current.find((c) => c.id === id)
             setActiveId(id)
             setSection('chats')
-            if (chosen?.cliTarget) {
-              setTerminalTarget(chosen.cliTarget)
-              setComposerDestination(chosen.cliTarget)
+            const activeCli = composerDestination !== 'model' ? composerDestination : null
+            const linked = chosen?.cliTarget ?? activeCli
+            if (linked) {
+              setTerminalTarget(linked)
+              setComposerDestination(linked)
+              if (chosen && !chosen.cliTarget) {
+                const nextConversations = conversationsRef.current.map((c) =>
+                  c.id === id ? { ...c, cliTarget: linked, updatedAt: Date.now() } : c
+                )
+                conversationsRef.current = nextConversations
+                setConversations(nextConversations)
+              }
               if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
             } else {
               setComposerDestination('model')
@@ -1829,10 +1888,24 @@ export default function App(): JSX.Element {
           onOpenSettings={() => setSettingsOpen(true)}
           section={section}
           onSectionChange={setSection}
+          documentsOpen={documentsOpen}
         />
       )}
 
-      <main className="main">
+      <main
+        className={`main${documentsOpen ? ' docs-on-left' : ''}`}
+        style={documentsOpen ? ({ '--docs-width': `${docsWidth}px` } as CSSProperties) : undefined}
+      >
+        {documentsOpen && (
+          <div
+            className="docs-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuenow={docsWidth}
+            aria-label="Arrastar para mudar a largura do painel"
+            onPointerDown={startDocsResize}
+          />
+        )}
         <div className="chat-column">
         {section === 'plugins' && settings ? (
           <PluginsPanel
@@ -1923,6 +1996,29 @@ export default function App(): JSX.Element {
           />
         ) : active && (
           <div className="chat-header">
+            <div className="chat-header-side">
+              {activeKind !== 'opencode' && (
+                <button
+                  className={`folder-chip ${workbenchOpen ? 'active' : ''}`}
+                  title="Alterações, artefatos e navegador"
+                  onClick={() => {
+                    if (workbenchOpen) {
+                      setWorkbenchOpen(false)
+                      return
+                    }
+                    setWorkbenchTab('files')
+                    setWorkbenchOpen(true)
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <PanelLeft size={14} /> Painel
+                    {(activeId ? fileChanges[activeId]?.length ?? 0 : 0) > 0 && (
+                      <span className="panel-count">{fileChanges[activeId!].length}</span>
+                    )}
+                  </span>
+                </button>
+              )}
+            </div>
             <span className="chat-title">{active.title}</span>
             <div className="chat-header-actions">
               {activeKind !== 'opencode' && activeFlow && (
@@ -1970,82 +2066,6 @@ export default function App(): JSX.Element {
                   <NotebookPen size={14} /> Projeto
                 </span>
               </button>
-            )}
-            {active.folder && (
-              <>
-                <button
-                  className={`folder-chip ${workbenchOpen && workbenchTab === 'files' ? 'active' : ''}`}
-                  title="Listar documentos da pasta"
-                  onClick={() => {
-                    if (workbenchOpen && workbenchTab === 'files') {
-                      setWorkbenchOpen(false)
-                    } else {
-                      setWorkbenchTab('files')
-                      setWorkbenchOpen(true)
-                    }
-                  }}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <FileText size={14} /> Documentos
-                  </span>
-                </button>
-                <button
-                  className="folder-chip"
-                  title="Abrir pasta no VS Code (padrão)"
-                  onClick={() => {
-                    if (active.folder) void window.api.openInVscode(active.folder)
-                  }}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Code2 size={14} /> VS Code
-                  </span>
-                </button>
-              </>
-            )}
-            {(activeKind === 'dev' || activeKind === 'opencode') && (
-              <button
-                className="folder-chip"
-                title={active.folder ?? 'Definir a pasta em que esta conversa trabalha'}
-                onClick={() => void changeActiveFolder()}
-              >
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <FolderOpen size={14} /> {active.folder ? folderLabel(active.folder) : 'Definir pasta'}
-                </span>
-              </button>
-            )}
-            {activeKind !== 'opencode' && (
-              <button
-                className={`folder-chip ${terminalModeActive ? 'active' : ''}`}
-                title="Alternar terminal integrado no lugar do chat (Shell, Claude ou Copilot)"
-                onClick={() => {
-                  if (terminalModeActive) {
-                    setComposerDestination('model')
-                  } else {
-                    setComposerDestination(terminalTarget)
-                    if (workbenchOpen && workbenchTab === 'terminal') {
-                      setWorkbenchOpen(false)
-                    }
-                  }
-                }}
-              >
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <TerminalSquare size={14} /> Terminal
-                </span>
-              </button>
-            )}
-            {activeKind !== 'opencode' && (
-            <button
-              className={`folder-chip ${workbenchOpen ? 'active' : ''}`}
-              title="Alterações, artefatos e navegador"
-              onClick={() => setWorkbenchOpen((open) => !open)}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <PanelRight size={14} /> Painel
-                {(activeId ? fileChanges[activeId]?.length ?? 0 : 0) > 0 && (
-                  <span className="panel-count">{fileChanges[activeId!].length}</span>
-                )}
-              </span>
-            </button>
             )}
             </div>
           </div>
@@ -2658,6 +2678,26 @@ export default function App(): JSX.Element {
             conversationKey={workbenchKey}
             folder={active?.folder ?? null}
             onPickFolder={() => void changeActiveFolder()}
+            showFolderButton={activeKind === 'dev'}
+            onOpenInVscode={
+              active?.folder
+                ? () => {
+                    const chosen = active.folder
+                    if (chosen) void window.api.openInVscode(chosen)
+                  }
+                : undefined
+            }
+            mainTerminalActive={terminalModeActive}
+            onToggleMainTerminal={() => {
+              if (terminalModeActive) {
+                setComposerDestination('model')
+              } else {
+                setComposerDestination(terminalTarget)
+                if (workbenchOpen && workbenchTab === 'terminal') {
+                  setWorkbenchOpen(false)
+                }
+              }
+            }}
             terminalTarget={terminalTarget}
             onTerminalTarget={setTerminalTarget}
             terminalInMainView={terminalModeActive}

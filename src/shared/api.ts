@@ -20,6 +20,7 @@ import type {
   SyncMessage,
   SyncPushPayload,
   WorkspaceDocument,
+  WorkspaceFileContent,
   TerminalEvent,
   TerminalSessionInfo,
   TerminalTarget,
@@ -98,6 +99,10 @@ export interface OsvaCodeApi {
   ) => Promise<FileChange | null>
   /** Lista os documentos e pastas da pasta de trabalho. */
   listWorkspaceFiles: (folder: string) => Promise<WorkspaceDocument[]>
+  /** Lê um documento da pasta de trabalho para mostrar dentro do aplicativo. */
+  readWorkspaceFile: (folder: string, relativePath: string) => Promise<WorkspaceFileContent>
+  /** Grava o texto editado de um documento da pasta de trabalho. */
+  writeWorkspaceFile: (folder: string, relativePath: string, text: string) => Promise<void>
   /** Abre um arquivo (ou a pasta inteira) no VS Code como editor padrão. */
   openInVscode: (folder: string, relativePath?: string) => Promise<{ ok: boolean; error?: string }>
   /** Consulta o catálogo de plugins no servidor configurado. */

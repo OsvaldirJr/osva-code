@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
 import { modelChoiceValue } from '../../../shared/types'
 import { ModelChoiceOptions } from './ModelChoice'
@@ -112,7 +112,8 @@ export function Sidebar({
   onChangeProvider,
   onOpenSettings,
   section,
-  onSectionChange
+  onSectionChange,
+  documentsOpen = false
 }: {
   user: AuthUser
   onLogout: () => void
@@ -133,13 +134,31 @@ export function Sidebar({
   onOpenSettings: () => void
   section: 'chats' | 'automations' | 'design' | 'plugins'
   onSectionChange: (section: 'chats' | 'automations' | 'design' | 'plugins') => void
+  /** Com os documentos abertos, a lista de conversas fica só nos ícones. */
+  documentsOpen?: boolean
 }): JSX.Element {
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed)
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>(readCollapsedGroups)
+  const collapsedBeforeDocs = useRef<boolean | null>(null)
+
+  useEffect(() => {
+    if (documentsOpen) {
+      setCollapsed((current) => {
+        if (collapsedBeforeDocs.current === null) collapsedBeforeDocs.current = current
+        return true
+      })
+      return
+    }
+    if (collapsedBeforeDocs.current === null) return
+    const restore = collapsedBeforeDocs.current
+    collapsedBeforeDocs.current = null
+    setCollapsed(restore)
+  }, [documentsOpen])
 
   const setCollapsedPersisted = (next: boolean): void => {
+    if (documentsOpen) collapsedBeforeDocs.current = next
     setCollapsed(next)
     try {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0')
@@ -268,25 +287,31 @@ export function Sidebar({
 
       <div className="sidebar-tabs">
         <button
+          type="button"
           className={tab === 'chat' ? 'active' : ''}
           title="Chat"
+          aria-label="Chat"
           onClick={() => onTabChange('chat')}
         >
-          <MessageSquare size={14} /> <span>Chat</span>
+          <MessageSquare size={16} />
         </button>
         <button
+          type="button"
           className={tab === 'dev' ? 'active' : ''}
           title="DevMode"
+          aria-label="DevMode"
           onClick={() => onTabChange('dev')}
         >
-          <Code2 size={14} /> <span>DevMode</span>
+          <Code2 size={16} />
         </button>
         <button
+          type="button"
           className={tab === 'opencode' ? 'active' : ''}
           title="OpenCode"
+          aria-label="OpenCode"
           onClick={() => onTabChange('opencode')}
         >
-          <Bot size={14} /> <span>OpenCode</span>
+          <Bot size={16} />
         </button>
       </div>
 

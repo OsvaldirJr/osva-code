@@ -223,6 +223,17 @@ export interface WorkspaceDocument {
   updatedAt: number
 }
 
+/** Conteúdo de um documento aberto dentro do aplicativo. */
+export interface WorkspaceFileContent {
+  path: string
+  name: string
+  kind: 'text' | 'markdown' | 'image' | 'binary'
+  text?: string
+  dataUrl?: string
+  truncated?: boolean
+  message?: string
+}
+
 export interface AppSettings {
   providers: ProviderConfig[]
   activeProviderId: string | null
