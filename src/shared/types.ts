@@ -46,6 +46,14 @@ export interface TerminalCliConfig {
   shellCommand: string
 }
 
+/** Uso dos modelos acessados pelo terminal: instalado e com sessão aberta. */
+export interface CliUsageStatus {
+  id: 'claude' | 'cursor' | 'copilot' | 'gemini'
+  label: string
+  installed: boolean
+  running: boolean
+}
+
 /** Binários detectados no PATH do sistema para o terminal integrado. */
 export interface TerminalToolStatus {
   claude: string | null
@@ -221,6 +229,17 @@ export interface WorkspaceDocument {
   kind: 'file' | 'folder'
   size: number
   updatedAt: number
+}
+
+/** Conteúdo de um documento aberto dentro do aplicativo. */
+export interface WorkspaceFileContent {
+  path: string
+  name: string
+  kind: 'text' | 'markdown' | 'image' | 'binary'
+  text?: string
+  dataUrl?: string
+  truncated?: boolean
+  message?: string
 }
 
 export interface AppSettings {

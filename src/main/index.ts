@@ -48,9 +48,12 @@ import {
   startOpenCodeStream
 } from './opencode'
 import {
+  createWorkspaceWorktree,
   listWorkspaceFiles,
   openInVscode,
+  readWorkspaceFile,
   rejectWorkspaceHunk,
+  writeWorkspaceFile,
   restoreWorkspaceFile,
   type HunkEdit
 } from './workspaceActions'
@@ -58,6 +61,7 @@ import { fetchPluginsCatalog, pluginMcpServers } from './plugins'
 import {
   closeAllTerminals,
   detectTerminalTools,
+  listCliUsage,
   getTerminalHistory,
   listTerminalSessions,
   resizeTerminalSession,
@@ -296,8 +300,17 @@ function registerIpc(): void {
       rejectWorkspaceHunk(folder, filePath, previous, hunk)
   )
   ipcMain.handle('workspace:list-files', (_event, folder: string) => listWorkspaceFiles(folder))
+  ipcMain.handle('workspace:read-file', (_event, folder: string, relativePath: string) =>
+    readWorkspaceFile(folder, relativePath)
+  )
+  ipcMain.handle('workspace:write-file', (_event, folder: string, relativePath: string, text: string) => {
+    writeWorkspaceFile(folder, relativePath, text)
+  })
   ipcMain.handle('workspace:open-vscode', (_event, folder: string, relativePath?: string) =>
     openInVscode(folder, relativePath)
+  )
+  ipcMain.handle('workspace:create-worktree', (_event, folder: string, slug: string) =>
+    createWorkspaceWorktree(folder, slug)
   )
   ipcMain.handle('plugins:catalog', (_event, serverUrl?: string) =>
     fetchPluginsCatalog(serverUrl ?? settings.plugins?.serverUrl)
@@ -645,6 +658,7 @@ function registerIpc(): void {
     mainWindow.webContents.send('terminal:event', event)
   })
   ipcMain.handle('terminal:tools', () => detectTerminalTools())
+  ipcMain.handle('cli:usage', () => listCliUsage())
   ipcMain.handle(
     'terminal:start',
     (

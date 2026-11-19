@@ -1,9 +1,12 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { accessSync, constants, existsSync, readdirSync, statSync } from 'fs'
+import { createRequire } from 'node:module'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 import { StringDecoder } from 'string_decoder'
+import type { IPty } from 'node-pty'
 import type {
+  CliUsageStatus,
   TerminalCliConfig,
   TerminalEvent,
   TerminalSessionInfo,
@@ -12,6 +15,15 @@ import type {
 } from '../shared/types'
 
 const MAX_HISTORY_CHARS = 200_000
+const nodeRequire = createRequire(import.meta.url)
+
+function loadNodePty(): typeof import('node-pty') {
+  return nodeRequire('node-pty') as typeof import('node-pty')
+}
+
+function pathDelimiter(): string {
+  return process.platform === 'win32' ? ';' : ':'
+}
 
 const PTY_BRIDGE_SCRIPT = `
 import base64, errno, fcntl, json, os, pty, select, signal, struct, sys, termios
@@ -183,6 +195,7 @@ emit({"type": "exit", "code": exit_code})
 interface ActiveSession {
   info: TerminalSessionInfo
   child: ChildProcessWithoutNullStreams | null
+  pty?: IPty
   decoder: StringDecoder
   history: string
   stdoutBuffer: string
@@ -205,11 +218,37 @@ function emitEvent(event: TerminalEvent): void {
 }
 
 function defaultShell(): string {
+  if (process.platform === 'win32') {
+    const comspec = process.env.ComSpec?.trim() || process.env.COMSPEC?.trim()
+    if (comspec && existsSync(comspec)) return comspec
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows'
+    const cmd = join(systemRoot, 'System32', 'cmd.exe')
+    if (existsSync(cmd)) return cmd
+    return 'cmd.exe'
+  }
   const envShell = process.env.SHELL?.trim()
   if (envShell && existsSync(envShell)) return envShell
   if (existsSync('/bin/zsh')) return '/bin/zsh'
   if (existsSync('/bin/bash')) return '/bin/bash'
   return '/bin/sh'
+}
+
+function windowsLaunch(
+  shell: string,
+  mode: 'interactive' | 'command',
+  command: string
+): { file: string; args: string[] } {
+  if (mode === 'command' && command && existsSync(command)) {
+    return { file: command, args: [] }
+  }
+  const name = basename(shell).toLowerCase()
+  const powershell = name === 'powershell.exe' || name === 'pwsh.exe' || name === 'powershell' || name === 'pwsh'
+  if (powershell) {
+    if (mode === 'command' && command) return { file: shell, args: ['-NoLogo', '-Command', command] }
+    return { file: shell, args: ['-NoLogo'] }
+  }
+  if (mode === 'command' && command) return { file: shell, args: ['/d', '/s', '/c', command] }
+  return { file: shell, args: [] }
 }
 
 function isExecutable(filePath: string): boolean {
@@ -239,6 +278,25 @@ function nvmBinDirs(home: string): string[] {
 export function resolveShellPath(forceRefresh = false): string {
   if (cachedEnvPath && !forceRefresh) return cachedEnvPath
   const home = homedir()
+  const delimiter = pathDelimiter()
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming')
+    const candidates = [
+      join(home, '.local', 'bin'),
+      join(appData, 'npm'),
+      ...(process.env.PATH ? process.env.PATH.split(';') : [])
+    ]
+    const seen = new Set<string>()
+    const unique = candidates.filter((entry) => {
+      const clean = entry.trim()
+      const key = clean.toLowerCase()
+      if (!clean || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    cachedEnvPath = unique.join(delimiter)
+    return cachedEnvPath
+  }
   const candidates: string[] = []
   const shell = defaultShell()
 
@@ -272,15 +330,28 @@ export function resolveShellPath(forceRefresh = false): string {
     return true
   })
 
-  cachedEnvPath = unique.join(':')
+  cachedEnvPath = unique.join(delimiter)
   return cachedEnvPath
 }
 
+function binaryExtensions(): string[] {
+  if (process.platform !== 'win32') return ['']
+  const listed = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((ext) => ext.trim())
+    .filter(Boolean)
+  return ['', ...listed]
+}
+
 function findBinary(name: string, envPath: string): string | null {
-  for (const dir of envPath.split(':')) {
+  const extensions = binaryExtensions()
+  for (const dir of envPath.split(pathDelimiter())) {
     if (!dir) continue
-    const candidate = join(dir, name)
-    if (isExecutable(candidate)) return candidate
+    for (const ext of extensions) {
+      const suffix = ext && name.toLowerCase().endsWith(ext.toLowerCase()) ? '' : ext
+      const candidate = join(dir, name + suffix)
+      if (isExecutable(candidate)) return candidate
+    }
   }
   return null
 }
@@ -324,7 +395,7 @@ function resolveCommandSpec(
 
   if (target === 'claude') {
     const custom = config?.claudeCommand?.trim()
-    const command = custom || 'claude'
+    const command = custom || (process.platform === 'win32' && tools.claude ? tools.claude : 'claude')
     const missingHint =
       !custom && !tools.claude
         ? 'Aviso: binário "claude" não encontrado no PATH. Instale o Claude Code (`npm i -g @anthropic-ai/claude-code`) ou ajuste o comando em Configurações → Terminal.\r\n'
@@ -333,14 +404,14 @@ function resolveCommandSpec(
       shell: userShell,
       mode: 'command',
       command,
-      display: command,
+      display: custom || 'claude',
       missingHint
     }
   }
 
   const custom = config?.copilotCommand?.trim()
   const detected = tools.copilot ? 'copilot' : tools.gh ? 'gh copilot' : 'copilot'
-  const command = custom || detected
+  const command = custom || (process.platform === 'win32' && tools.copilot ? tools.copilot : detected)
   const missingHint =
     !custom && !tools.copilot && !tools.gh
       ? 'Aviso: "copilot" e "gh" não encontrados no PATH. Instale o GitHub Copilot CLI ou ajuste o comando em Configurações → Terminal.\r\n'
@@ -349,7 +420,7 @@ function resolveCommandSpec(
     shell: userShell,
     mode: 'command',
     command,
-    display: command,
+    display: custom || detected,
     missingHint
   }
 }
@@ -450,6 +521,11 @@ export function startTerminalSession(input: {
     FORCE_COLOR: '1'
   }
   delete env.NO_COLOR
+  if (process.platform === 'win32') {
+    for (const key of Object.keys(env)) {
+      if (key !== 'PATH' && key.toLowerCase() === 'path') delete env[key]
+    }
+  }
 
   const info: TerminalSessionInfo = {
     sessionId: input.sessionId,
@@ -481,13 +557,6 @@ export function startTerminalSession(input: {
     emitEvent({ sessionId: input.sessionId, type: 'data', data: warn })
   }
 
-  const child = spawn(
-    'python3',
-    ['-u', '-c', PTY_BRIDGE_SCRIPT, spec.shell, spec.mode, String(cols), String(rows), spec.command],
-    { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] }
-  )
-  session.child = child
-
   if (session.pendingInitialInput !== undefined) {
     session.initialFallbackTimer = setTimeout(() => {
       flushInitialInput(session)
@@ -503,6 +572,50 @@ export function startTerminalSession(input: {
       session.initialTimer = setTimeout(() => flushInitialInput(session), delay)
     }
   }
+
+  const failStart = (message: string): void => {
+    clearInitialTimers(session)
+    session.info = { ...session.info, running: false, exitCode: 1 }
+    const msg = `\r\n\x1b[31mErro ao iniciar terminal: ${message}\x1b[0m\r\n`
+    appendHistory(session, msg)
+    emitEvent({ sessionId: session.info.sessionId, type: 'data', data: msg })
+    emitEvent({ sessionId: session.info.sessionId, type: 'error', message })
+    emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      const invocation = windowsLaunch(spec.shell, spec.mode, spec.command)
+      const pty = loadNodePty().spawn(invocation.file, invocation.args, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd,
+        env
+      })
+      session.pty = pty
+      pty.onData((data) => pushText(data))
+      pty.onExit(({ exitCode }) => {
+        clearInitialTimers(session)
+        if (!session.info.running) return
+        const tail = session.decoder.end()
+        if (tail) pushText(tail)
+        session.info = { ...session.info, running: false, exitCode }
+        emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
+        emitEvent({ sessionId: session.info.sessionId, type: 'exit', code: exitCode })
+      })
+    } catch (err) {
+      failStart(err instanceof Error ? err.message : 'não foi possível abrir o console')
+    }
+    return { ...session.info }
+  }
+
+  const child = spawn(
+    'python3',
+    ['-u', '-c', PTY_BRIDGE_SCRIPT, spec.shell, spec.mode, String(cols), String(rows), spec.command],
+    { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] }
+  )
+  session.child = child
 
   child.stdout.on('data', (chunk: Buffer) => {
     session.stdoutBuffer += chunk.toString('utf8')
@@ -541,13 +654,7 @@ export function startTerminalSession(input: {
   })
 
   child.on('error', (err) => {
-    clearInitialTimers(session)
-    session.info = { ...session.info, running: false, exitCode: 1 }
-    const msg = `\r\n\x1b[31mErro ao iniciar terminal: ${err.message}\x1b[0m\r\n`
-    appendHistory(session, msg)
-    emitEvent({ sessionId: session.info.sessionId, type: 'data', data: msg })
-    emitEvent({ sessionId: session.info.sessionId, type: 'error', message: err.message })
-    emitEvent({ sessionId: session.info.sessionId, type: 'status', session: { ...session.info } })
+    failStart(err.message)
   })
 
   child.on('close', (code) => {
@@ -567,6 +674,14 @@ export function startTerminalSession(input: {
 export function writeTerminalSession(sessionId: string, data: string): void {
   const session = sessions.get(sessionId)
   if (!session || !session.info.running || !data) return
+  if (session.pty) {
+    try {
+      session.pty.write(data)
+    } catch {
+      // o processo já encerrou
+    }
+    return
+  }
   const encoded = Buffer.from(data, 'utf8').toString('base64')
   sendControl(session, { type: 'input', data: encoded })
 }
@@ -593,7 +708,17 @@ export function sendTerminalLine(sessionId: string, text: string): void {
 export function resizeTerminalSession(sessionId: string, cols: number, rows: number): void {
   const session = sessions.get(sessionId)
   if (!session || !session.info.running) return
-  sendControl(session, { type: 'resize', cols: Math.max(10, Math.round(cols)), rows: Math.max(4, Math.round(rows)) })
+  const nextCols = Math.max(10, Math.round(cols))
+  const nextRows = Math.max(4, Math.round(rows))
+  if (session.pty) {
+    try {
+      session.pty.resize(nextCols, nextRows)
+    } catch {
+      // o processo já encerrou
+    }
+    return
+  }
+  sendControl(session, { type: 'resize', cols: nextCols, rows: nextRows })
 }
 
 export function stopTerminalSession(sessionId: string): void {
@@ -601,6 +726,14 @@ export function stopTerminalSession(sessionId: string): void {
   if (!session) return
   clearInitialTimers(session)
   session.pendingInitialInput = undefined
+  if (session.pty) {
+    try {
+      session.pty.kill()
+    } catch {
+      // o processo já encerrou
+    }
+    return
+  }
   if (session.info.running) {
     sendControl(session, { type: 'kill' })
     setTimeout(() => {
@@ -619,6 +752,59 @@ export function getTerminalHistory(sessionId: string): { session: TerminalSessio
   const session = sessions.get(sessionId)
   if (!session) return { session: null, buffer: '' }
   return { session: { ...session.info }, buffer: session.history }
+}
+
+function processRunning(image: string): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 4000
+    })
+    return out.toLowerCase().includes(image.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+export function listCliUsage(): CliUsageStatus[] {
+  const envPath = resolveShellPath()
+  const local = process.env.LOCALAPPDATA || ''
+  const tools = detectTerminalTools()
+  const sessions = listTerminalSessions()
+  const sessionOn = (target: TerminalTarget): boolean =>
+    sessions.some((item) => item.target === target && item.running)
+  const cursorInstalled = Boolean(
+    (local && existsSync(join(local, 'cursor-agent', 'cursor-agent.cmd'))) || findBinary('agent', envPath)
+  )
+  const geminiInstalled = Boolean(findBinary('gemini', envPath) || existsSync(join(homedir(), '.gemini')))
+  return [
+    {
+      id: 'claude',
+      label: 'Claude',
+      installed: Boolean(tools.claude),
+      running: sessionOn('claude') || processRunning('claude.exe')
+    },
+    {
+      id: 'cursor',
+      label: 'Cursor',
+      installed: cursorInstalled,
+      running: processRunning('agent.exe')
+    },
+    {
+      id: 'copilot',
+      label: 'Copilot',
+      installed: Boolean(tools.copilot || tools.gh),
+      running: sessionOn('copilot') || processRunning('copilot.exe')
+    },
+    {
+      id: 'gemini',
+      label: 'Gemini',
+      installed: geminiInstalled,
+      running: processRunning('gemini.exe')
+    }
+  ]
 }
 
 export function listTerminalSessions(): TerminalSessionInfo[] {

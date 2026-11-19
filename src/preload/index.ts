@@ -65,8 +65,12 @@ const api: OsvaCodeApi = {
   revertHunk: (folder, path, previous, hunk) =>
     ipcRenderer.invoke('workspace:revert-hunk', folder, path, previous, hunk),
   listWorkspaceFiles: (folder) => ipcRenderer.invoke('workspace:list-files', folder),
+  readWorkspaceFile: (folder, relativePath) => ipcRenderer.invoke('workspace:read-file', folder, relativePath),
+  writeWorkspaceFile: (folder, relativePath, text) =>
+    ipcRenderer.invoke('workspace:write-file', folder, relativePath, text),
   openInVscode: (folder, relativePath) =>
     ipcRenderer.invoke('workspace:open-vscode', folder, relativePath),
+  createWorktree: (folder, slug) => ipcRenderer.invoke('workspace:create-worktree', folder, slug),
   fetchPluginsCatalog: (serverUrl) => ipcRenderer.invoke('plugins:catalog', serverUrl),
   navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
   openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),
@@ -101,6 +105,7 @@ const api: OsvaCodeApi = {
   terminalStop: (sessionId) => ipcRenderer.invoke('terminal:stop', sessionId),
   terminalHistory: (sessionId) => ipcRenderer.invoke('terminal:history', sessionId),
   terminalList: () => ipcRenderer.invoke('terminal:list'),
+  cliUsage: () => ipcRenderer.invoke('cli:usage'),
   onTerminalEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, event: TerminalEvent): void => callback(event)
     ipcRenderer.on('terminal:event', listener)

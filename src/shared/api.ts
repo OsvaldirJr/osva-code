@@ -6,6 +6,7 @@ import type {
   AutomationHookEvent,
   ChatEventPayload,
   ChatMessage,
+  CliUsageStatus,
   FileChange,
   OpenCodeFileDiff,
   OpenCodeModel,
@@ -20,6 +21,7 @@ import type {
   SyncMessage,
   SyncPushPayload,
   WorkspaceDocument,
+  WorkspaceFileContent,
   TerminalEvent,
   TerminalSessionInfo,
   TerminalTarget,
@@ -98,8 +100,14 @@ export interface OsvaCodeApi {
   ) => Promise<FileChange | null>
   /** Lista os documentos e pastas da pasta de trabalho. */
   listWorkspaceFiles: (folder: string) => Promise<WorkspaceDocument[]>
+  /** Lê um documento da pasta de trabalho para mostrar dentro do aplicativo. */
+  readWorkspaceFile: (folder: string, relativePath: string) => Promise<WorkspaceFileContent>
+  /** Grava o texto editado de um documento da pasta de trabalho. */
+  writeWorkspaceFile: (folder: string, relativePath: string, text: string) => Promise<void>
   /** Abre um arquivo (ou a pasta inteira) no VS Code como editor padrão. */
   openInVscode: (folder: string, relativePath?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Cria uma worktree git ao lado do repositório para uma conversa isolada. */
+  createWorktree: (folder: string, slug: string) => Promise<{ path: string; branch: string }>
   /** Consulta o catálogo de plugins no servidor configurado. */
   fetchPluginsCatalog: (serverUrl?: string) => Promise<PluginCatalogResult>
   /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */
@@ -144,5 +152,6 @@ export interface OsvaCodeApi {
   terminalStop: (sessionId: string) => Promise<void>
   terminalHistory: (sessionId: string) => Promise<{ session: TerminalSessionInfo | null; buffer: string }>
   terminalList: () => Promise<TerminalSessionInfo[]>
+  cliUsage: () => Promise<CliUsageStatus[]>
   onTerminalEvent: (callback: (event: TerminalEvent) => void) => () => void
 }

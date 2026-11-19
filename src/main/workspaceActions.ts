@@ -1,8 +1,8 @@
-import { spawn } from 'child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
-import { dirname, isAbsolute, relative, resolve, sep } from 'path'
+import { spawn, spawnSync } from 'child_process'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'path'
 import { changeBetween } from './changes'
-import type { FileChange, WorkspaceDocument } from '../shared/types'
+import type { FileChange, WorkspaceDocument, WorkspaceFileContent } from '../shared/types'
 
 const SKIP = new Set([
   'node_modules',
@@ -34,6 +34,34 @@ export interface HunkEdit {
   removed: string[]
   added: string[]
   after: string | null
+}
+
+export function createWorkspaceWorktree(folder: string, slug: string): { path: string; branch: string } {
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: folder,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (top.status !== 0) {
+    throw new Error('Esta pasta não é um repositório git, então não dá para criar uma worktree.')
+  }
+  const root = top.stdout.trim()
+  const safe = slug.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24) || 'aba'
+  const branch = `osvacode/${safe}`
+  const destParent = resolve(dirname(root), `${basename(root)}-worktrees`)
+  mkdirSync(destParent, { recursive: true })
+  const dest = resolve(destParent, safe)
+  if (existsSync(dest)) throw new Error('Já existe uma worktree com esse nome.')
+  const created = spawnSync('git', ['worktree', 'add', '-b', branch, dest, 'HEAD'], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (created.status !== 0) {
+    const message = (created.stderr || created.stdout || 'Não consegui criar a worktree.').trim()
+    throw new Error(message)
+  }
+  return { path: dest, branch }
 }
 
 export function resolveInside(folder: string, input: string): string | null {
@@ -174,6 +202,72 @@ export function runInFolder(
       resolvePromise({ ok: false, output: err.message })
     })
   })
+}
+
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'])
+const EDIT_LIMIT = 2_000_000
+
+function imageMime(ext: string): string {
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'svg') return 'image/svg+xml'
+  return `image/${ext}`
+}
+
+export function readWorkspaceFile(folder: string, filePath: string): WorkspaceFileContent {
+  const root = resolve(folder)
+  const abs = resolveInside(root, filePath.trim())
+  if (!abs || !existsSync(abs)) throw new Error('Documento não encontrado na pasta de trabalho.')
+  const info = statSync(abs)
+  if (!info.isFile()) throw new Error('Isso é uma pasta. Abra um arquivo.')
+  const name = basename(abs)
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+  const path = relativePath(root, abs)
+  if (IMAGE_EXT.has(ext)) {
+    if (info.size > 4_000_000) {
+      return { path, name, kind: 'binary', message: 'Esta imagem é grande demais para abrir aqui.' }
+    }
+    const dataUrl = `data:${imageMime(ext)};base64,${readFileSync(abs).toString('base64')}`
+    return { path, name, kind: 'image', dataUrl }
+  }
+  if (info.size > EDIT_LIMIT) {
+    const raw = Buffer.alloc(MAX_FILE_BYTES)
+    const fd = openSync(abs, 'r')
+    try {
+      readSync(fd, raw, 0, MAX_FILE_BYTES, 0)
+    } finally {
+      closeSync(fd)
+    }
+    if (raw.includes(0)) {
+      return { path, name, kind: 'binary', message: 'Este arquivo não é texto e não dá para ler aqui.' }
+    }
+    return {
+      path,
+      name,
+      kind: ext === 'md' || ext === 'mdx' ? 'markdown' : 'text',
+      text: raw.toString('utf8'),
+      truncated: true
+    }
+  }
+  const raw = readFileSync(abs)
+  if (raw.includes(0)) {
+    return { path, name, kind: 'binary', message: 'Este arquivo não é texto e não dá para ler aqui.' }
+  }
+  return {
+    path,
+    name,
+    kind: ext === 'md' || ext === 'mdx' ? 'markdown' : 'text',
+    text: raw.toString('utf8')
+  }
+}
+
+export function writeWorkspaceFile(folder: string, filePath: string, text: string): void {
+  const root = resolve(folder)
+  const abs = resolveInside(root, filePath.trim())
+  if (!abs || !existsSync(abs)) throw new Error('Documento não encontrado na pasta de trabalho.')
+  const info = statSync(abs)
+  if (!info.isFile()) throw new Error('Isso é uma pasta.')
+  if (text.length > EDIT_LIMIT) throw new Error('O texto ficou grande demais para salvar por aqui.')
+  writeFileSync(abs, text, 'utf8')
 }
 
 export function listWorkspaceFiles(folder: string): WorkspaceDocument[] {
