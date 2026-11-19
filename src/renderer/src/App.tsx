@@ -46,7 +46,7 @@ import { IntegratedTerminal, terminalSessionId } from './components/IntegratedTe
 import { OpenCodePane, OpenCodeSections, type OpenCodeShellRun, type OpenCodeView } from './components/OpenCodePanel'
 import type { Artifact } from './artifacts'
 import {
-  Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, X, NotebookPen, PanelLeft, TerminalSquare
+  Plus, Settings, AlertTriangle, Folder, Image, FileText, Mic, Square, ArrowUp, ChevronDown, ChevronRight, X, NotebookPen, PanelLeft, RefreshCw, Sparkles, TerminalSquare
 } from 'lucide-react'
 
 export type UiMessage =
@@ -168,9 +168,153 @@ function formatTokens(value: number): string {
   return new Intl.NumberFormat('pt-BR').format(value)
 }
 
-function UsageFooter({ items }: { items: CliUsageStatus[] }): JSX.Element {
+function sessionAgent(conversation: Conversation): { id: string; label: string } {
+  if (conversation.cliTarget === 'claude') return { id: 'claude', label: 'Claude' }
+  if (conversation.cliTarget === 'copilot') return { id: 'copilot', label: 'Copilot' }
+  if (conversation.cliTarget === 'shell') return { id: 'shell', label: 'Shell' }
+  return { id: 'model', label: 'Modelo' }
+}
+
+function contextRatio(usage?: ConversationUsage): number | null {
+  if (!usage?.contextTokens || usage.contextTokens <= 0) return null
+  return Math.min(1, Math.max(0, usage.promptTokens / usage.contextTokens))
+}
+
+function usageTone(ratio: number | null): 'ok' | 'mid' | 'high' | '' {
+  if (ratio == null) return ''
+  if (ratio >= 0.9) return 'high'
+  if (ratio >= 0.7) return 'mid'
+  return 'ok'
+}
+
+function percentText(ratio: number | null): string {
+  if (ratio == null) return '—'
+  return `${Math.round(ratio * 100)}%`
+}
+
+function sinceLabel(ts: number): string {
+  const mins = Math.max(0, Math.round((Date.now() - ts) / 60000))
+  if (mins < 1) return 'agora'
+  if (mins < 60) return `${mins} min`
+  const hours = Math.floor(mins / 60)
+  const remMin = mins % 60
+  if (hours < 48) return remMin ? `${hours} h ${remMin} min` : `${hours} h`
+  const days = Math.floor(hours / 24)
+  const remH = hours % 24
+  return remH ? `${days} d ${remH} h` : `${days} d`
+}
+
+interface UsageSession {
+  id: string
+  title: string
+  agentId: string
+  agentLabel: string
+  updatedAt: number
+  usage?: ConversationUsage
+  running: boolean
+}
+
+function UsageMeter({
+  label,
+  note,
+  value,
+  ratio
+}: {
+  label: string
+  note?: string
+  value: string
+  ratio: number | null
+}): JSX.Element {
+  const tone = usageTone(ratio)
   return (
-    <div className="app-footer-usage" title="Modelos acessados pelo terminal">
+    <div className="usage-meter">
+      <span className="usage-meter-label">
+        {label}
+        {note ? <span className="usage-meter-note"> · {note}</span> : null}
+      </span>
+      <strong className={tone ? `usage-hover-pct ${tone}` : 'usage-hover-pct'}>{value}</strong>
+      <span className="usage-meter-bar">
+        <span className={tone} style={{ width: `${Math.round((ratio ?? 0) * 100)}%` }} />
+      </span>
+    </div>
+  )
+}
+
+function UsageFooter({
+  items,
+  conversations,
+  openTabIds,
+  runningTerminals
+}: {
+  items: CliUsageStatus[]
+  conversations: Conversation[]
+  openTabIds: string[]
+  runningTerminals: string[]
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState<'compact' | 'detailed'>('compact')
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
+
+  const sessions: UsageSession[] = conversations
+    .filter((conversation) => {
+      const counted = (conversation.usage?.promptTokens ?? 0) > 0 || (conversation.usage?.generatedTokens ?? 0) > 0
+      const openTab = openTabIds.includes(conversation.id)
+      const running = conversation.cliTarget
+        ? runningTerminals.includes(`${conversation.id}:${conversation.cliTarget}`)
+        : false
+      return counted || openTab || running
+    })
+    .map((conversation) => {
+      const agent = sessionAgent(conversation)
+      return {
+        id: conversation.id,
+        title: conversation.title,
+        agentId: agent.id,
+        agentLabel: agent.label,
+        updatedAt: conversation.updatedAt,
+        usage: conversation.usage,
+        running: conversation.cliTarget
+          ? runningTerminals.includes(`${conversation.id}:${conversation.cliTarget}`)
+          : false
+      }
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+
+  const agents = [...sessions.reduce((map, session) => {
+    const group = map.get(session.agentId) ?? []
+    group.push(session)
+    map.set(session.agentId, group)
+    return map
+  }, new Map<string, UsageSession[]>()).entries()].map(([id, group]) => {
+    const ratios = group.map((session) => contextRatio(session.usage)).filter((ratio): ratio is number => ratio != null)
+    return {
+      id,
+      label: group[0]?.agentLabel ?? id,
+      sessions: group,
+      updatedAt: Math.max(...group.map((session) => session.updatedAt)),
+      ratio: ratios.length ? Math.max(...ratios) : null,
+      running: group.some((session) => session.running)
+    }
+  })
+
+  const hoveredAgent = agents.find((agent) => agent.id === hoverId) ?? null
+  const hoveredSession = sessions.find((session) => session.id === hoverId) ?? null
+  const hoverIndex =
+    view === 'compact'
+      ? agents.findIndex((agent) => agent.id === hoverId)
+      : sessions.findIndex((session) => session.id === hoverId)
+
+  return (
+    <div
+      className="app-footer-usage"
+      title="Uso das sessões"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => {
+        setOpen(false)
+        setHoverId(null)
+      }}
+    >
       {items.map((item) => {
         const label = !item.installed ? 'não instalado' : item.running ? 'em uso' : 'sem uso'
         return (
@@ -181,6 +325,147 @@ function UsageFooter({ items }: { items: CliUsageStatus[] }): JSX.Element {
           </span>
         )
       })}
+      {open && (
+        <div className="usage-hover">
+          <div className="usage-hover-card">
+            <div className="usage-hover-head">
+              <span>Uso · todos os agentes</span>
+              <button type="button" className="usage-hover-refresh" aria-label="Atualizar" onClick={() => setTick((value) => value + 1)}>
+                <RefreshCw size={13} />
+              </button>
+              <span className="usage-hover-col">Usado</span>
+            </div>
+            <div className="usage-hover-toggle" role="tablist">
+              <button type="button" className={view === 'detailed' ? 'on' : ''} onClick={() => { setView('detailed'); setHoverId(null) }}>
+                Detalhado
+              </button>
+              <button type="button" className={view === 'compact' ? 'on' : ''} onClick={() => { setView('compact'); setHoverId(null) }}>
+                Compacto
+              </button>
+            </div>
+            {sessions.length === 0 ? (
+              <p className="usage-hover-empty">Nenhuma sessão ainda. O uso aparece quando uma conversa conta tokens.</p>
+            ) : view === 'compact' ? (
+              agents.map((agent) => {
+                const tone = usageTone(agent.ratio)
+                return (
+                  <div
+                    key={agent.id}
+                    className={`usage-hover-row ${hoverId === agent.id ? 'on' : ''}`}
+                    onMouseEnter={() => setHoverId(agent.id)}
+                  >
+                    {agent.id === 'model' ? <Sparkles size={14} /> : <TerminalSquare size={14} />}
+                    <span className="usage-hover-name">
+                      {agent.label}
+                      <span className="usage-hover-sub">
+                        {' '}· {agent.sessions.length === 1 ? '1 sessão' : `${agent.sessions.length} sessões`}
+                      </span>
+                    </span>
+                    <span className="usage-hover-time">{sinceLabel(agent.updatedAt)}</span>
+                    <strong className={tone ? `usage-hover-pct ${tone}` : 'usage-hover-pct'}>{percentText(agent.ratio)}</strong>
+                    <ChevronRight size={14} />
+                  </div>
+                )
+              })
+            ) : (
+              sessions.map((session) => {
+                const ratio = contextRatio(session.usage)
+                const tone = usageTone(ratio)
+                return (
+                  <div
+                    key={session.id}
+                    className={`usage-hover-row ${hoverId === session.id ? 'on' : ''}`}
+                    onMouseEnter={() => setHoverId(session.id)}
+                  >
+                    {session.agentId === 'model' ? <Sparkles size={14} /> : <TerminalSquare size={14} />}
+                    <span className="usage-hover-name">
+                      {session.title}
+                      <span className="usage-hover-sub"> · {session.agentLabel}</span>
+                    </span>
+                    <span className="usage-hover-time">{sinceLabel(session.updatedAt)}</span>
+                    <strong className={tone ? `usage-hover-pct ${tone}` : 'usage-hover-pct'}>{percentText(ratio)}</strong>
+                    <ChevronRight size={14} />
+                  </div>
+                )
+              })
+            )}
+          </div>
+          {view === 'compact' && hoveredAgent && (
+            <div className="usage-hover-detail" style={{ marginTop: Math.min(120, 52 + Math.max(0, hoverIndex) * 36) }}>
+              <div className="usage-hover-head">
+                <span>{hoveredAgent.label}</span>
+                <span className="usage-hover-col">Usado</span>
+              </div>
+              <p className="usage-hover-updated">
+                {sinceLabel(hoveredAgent.updatedAt) === 'agora'
+                  ? 'Atualizado agora'
+                  : `Atualizado há ${sinceLabel(hoveredAgent.updatedAt)}`}
+              </p>
+              {hoveredAgent.sessions.map((session) => {
+                const ratio = contextRatio(session.usage)
+                return (
+                  <UsageMeter
+                    key={session.id}
+                    label={session.title}
+                    note={session.running ? 'em uso' : undefined}
+                    value={ratio != null ? percentText(ratio) : session.usage ? formatTokens(session.usage.promptTokens || session.usage.generatedTokens) : '—'}
+                    ratio={ratio}
+                  />
+                )
+              })}
+            </div>
+          )}
+          {view === 'detailed' && hoveredSession && (
+            <div className="usage-hover-detail" style={{ marginTop: Math.min(120, 52 + Math.max(0, hoverIndex) * 36) }}>
+              <div className="usage-hover-head">
+                <span>{hoveredSession.title}</span>
+                <span className="usage-hover-col">Usado</span>
+              </div>
+              <p className="usage-hover-updated">
+                {hoveredSession.agentLabel}
+                {' · '}
+                {sinceLabel(hoveredSession.updatedAt) === 'agora'
+                  ? 'atualizado agora'
+                  : `atualizado há ${sinceLabel(hoveredSession.updatedAt)}`}
+              </p>
+              {hoveredSession.usage ? (
+                <>
+                  <UsageMeter
+                    label="Contexto"
+                    note={
+                      hoveredSession.usage.contextTokens
+                        ? `${formatTokens(hoveredSession.usage.promptTokens)} de ${formatTokens(hoveredSession.usage.contextTokens)}`
+                        : formatTokens(hoveredSession.usage.promptTokens)
+                    }
+                    value={percentText(contextRatio(hoveredSession.usage))}
+                    ratio={contextRatio(hoveredSession.usage)}
+                  />
+                  <UsageMeter
+                    label="Última resposta"
+                    value={formatTokens(hoveredSession.usage.completionTokens)}
+                    ratio={
+                      hoveredSession.usage.contextTokens
+                        ? Math.min(1, hoveredSession.usage.completionTokens / hoveredSession.usage.contextTokens)
+                        : null
+                    }
+                  />
+                  <UsageMeter
+                    label="Gerado na conversa"
+                    value={formatTokens(hoveredSession.usage.generatedTokens)}
+                    ratio={
+                      hoveredSession.usage.contextTokens
+                        ? Math.min(1, hoveredSession.usage.generatedTokens / hoveredSession.usage.contextTokens)
+                        : null
+                    }
+                  />
+                </>
+              ) : (
+                <p className="usage-hover-empty">Esta sessão ainda não contou tokens.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -274,6 +559,16 @@ export function folderKey(path: string): string {
 }
 
 const NEW_CONVERSATION_TITLE = 'Nova conversa'
+const CHAT_TABS_KEY = 'osvacode.chatTabs'
+
+function readChatTabs(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHAT_TABS_KEY) || '[]') as unknown
+    return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 /** Título curto a partir do primeiro pedido, no lugar de um nome digitado. */
 export function titleFromContext(text: string): string {
@@ -412,6 +707,8 @@ export default function App(): JSX.Element {
   const [hookPort, setHookPort] = useState(AUTOMATION_HOOK_PORT)
   const [usageOpen, setUsageOpen] = useState(false)
   const [cliUsage, setCliUsage] = useState<CliUsageStatus[]>([])
+  const [openTabIds, setOpenTabIds] = useState<string[]>(readChatTabs)
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false)
   const usageRef = useRef<HTMLDivElement>(null)
   const [addOpen, setAddOpen] = useState(false)
   const addRef = useRef<HTMLDivElement>(null)
@@ -508,6 +805,22 @@ export default function App(): JSX.Element {
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`
   }, [input])
+
+  useEffect(() => {
+    localStorage.setItem(CHAT_TABS_KEY, JSON.stringify(openTabIds))
+  }, [openTabIds])
+
+  useEffect(() => {
+    if (!activeId) return
+    setOpenTabIds((prev) => (prev.includes(activeId) ? prev : [...prev, activeId]))
+  }, [activeId])
+
+  useEffect(() => {
+    if (!agentMenuOpen) return
+    const close = () => setAgentMenuOpen(false)
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [agentMenuOpen])
 
   useEffect(() => {
     const load = (): void => {
@@ -1519,6 +1832,102 @@ export default function App(): JSX.Element {
     createConversation('chat', null)
   }, [tab, createConversation])
 
+  const selectConversation = useCallback(
+    (id: string, bindCurrentCli: boolean) => {
+      const chosen = conversationsRef.current.find((c) => c.id === id)
+      setActiveId(id)
+      if (chosen) setTab(conversationKind(chosen))
+      setSection('chats')
+      setOpenTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+      const activeCli = composerDestination !== 'model' ? composerDestination : null
+      const linked = chosen?.cliTarget ?? (bindCurrentCli ? activeCli : null)
+      if (linked) {
+        setTerminalTarget(linked)
+        setComposerDestination(linked)
+        if (bindCurrentCli && chosen && !chosen.cliTarget) {
+          const nextConversations = conversationsRef.current.map((c) =>
+            c.id === id ? { ...c, cliTarget: linked, updatedAt: Date.now() } : c
+          )
+          conversationsRef.current = nextConversations
+          setConversations(nextConversations)
+        }
+        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+      } else {
+        setComposerDestination('model')
+      }
+    },
+    [composerDestination, workbenchOpen, workbenchTab]
+  )
+
+  const newAgentTab = useCallback(
+    async (agent: 'same' | TerminalTarget) => {
+      setAgentMenuOpen(false)
+      const source = conversationsRef.current.find((c) => c.id === activeIdRef.current)
+      const base = source?.folder
+      if (!base) {
+        window.alert('Esta conversa precisa de uma pasta git para abrir outra aba numa worktree.')
+        return
+      }
+      if (typeof window.api.createWorktree !== 'function') {
+        window.alert('Reinicie o aplicativo para criar a worktree.')
+        return
+      }
+      const id = crypto.randomUUID()
+      let path: string
+      try {
+        const created = await window.api.createWorktree(base, id.slice(0, 8))
+        path = created.path
+      } catch (err) {
+        window.alert(err instanceof Error ? err.message : 'Não consegui criar a worktree.')
+        return
+      }
+      const cliTarget = agent === 'same' ? source?.cliTarget : agent
+      const kind = source && conversationKind(source) !== 'opencode' ? conversationKind(source) : 'dev'
+      const agentName =
+        cliTarget === 'claude' ? 'Claude' : cliTarget === 'copilot' ? 'Copilot' : cliTarget === 'shell' ? 'Shell' : 'Modelo'
+      const slug = path.split(/[/\\]/).pop() || 'worktree'
+      const createdConversation: Conversation = {
+        id,
+        title: `${agentName} · ${slug}`,
+        autoTitle: true,
+        messages: [],
+        updatedAt: Date.now(),
+        kind,
+        folder: folderKey(path),
+        ...(cliTarget ? { cliTarget } : {})
+      }
+      const nextConversations = [createdConversation, ...conversationsRef.current]
+      conversationsRef.current = nextConversations
+      setConversations(nextConversations)
+      setOpenTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+      setActiveId(id)
+      setTab(kind)
+      setSection('chats')
+      if (cliTarget) {
+        setTerminalTarget(cliTarget)
+        setComposerDestination(cliTarget)
+      } else {
+        setComposerDestination('model')
+      }
+    },
+    []
+  )
+
+  const closeChatTab = useCallback(
+    (id: string) => {
+      const next = openTabIds.filter((item) => item !== id)
+      setOpenTabIds(next)
+      if (activeId !== id) return
+      const fallback = next[next.length - 1]
+      if (fallback) selectConversation(fallback, false)
+      else {
+        setActiveId(null)
+        setComposerDestination('model')
+      }
+    },
+    [activeId, openTabIds, selectConversation]
+  )
+
   // Trocar de aba: deseleciona a conversa (a lista passa a ser a da aba).
   const changeTab = useCallback((next: ConversationKind) => {
     setTab(next)
@@ -1556,6 +1965,7 @@ export default function App(): JSX.Element {
         })
       }
       setConversations((prev) => prev.filter((c) => c.id !== id))
+      setOpenTabIds((prev) => prev.filter((item) => item !== id))
       void window.api.terminalStop(terminalSessionId(id, 'claude'))
       void window.api.terminalStop(terminalSessionId(id, 'copilot'))
       void window.api.terminalStop(terminalSessionId(id, 'shell'))
@@ -1891,27 +2301,7 @@ export default function App(): JSX.Element {
           onTabChange={changeTab}
           remoteChats={remoteChats}
           onImportRemote={(remote) => void importRemoteChat(remote)}
-          onSelect={(id) => {
-            const chosen = conversationsRef.current.find((c) => c.id === id)
-            setActiveId(id)
-            setSection('chats')
-            const activeCli = composerDestination !== 'model' ? composerDestination : null
-            const linked = chosen?.cliTarget ?? activeCli
-            if (linked) {
-              setTerminalTarget(linked)
-              setComposerDestination(linked)
-              if (chosen && !chosen.cliTarget) {
-                const nextConversations = conversationsRef.current.map((c) =>
-                  c.id === id ? { ...c, cliTarget: linked, updatedAt: Date.now() } : c
-                )
-                conversationsRef.current = nextConversations
-                setConversations(nextConversations)
-              }
-              if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
-            } else {
-              setComposerDestination('model')
-            }
-          }}
+          onSelect={(id) => selectConversation(id, true)}
           onNew={() => {
             setSection('chats')
             setComposerDestination('model')
@@ -2053,7 +2443,64 @@ export default function App(): JSX.Element {
                 </button>
               )}
             </div>
-            <span className="chat-title">{active.title}</span>
+            <div className="chat-tabstrip" role="tablist">
+              <div className="chat-tabs">
+              {openTabIds
+                .map((id) => conversations.find((item) => item.id === id))
+                .filter((item): item is Conversation => Boolean(item))
+                .map((item) => (
+                  <div
+                    key={item.id}
+                    role="tab"
+                    aria-selected={item.id === active.id}
+                    className={`chat-tab ${item.id === active.id ? 'active' : ''}`}
+                    title={item.folder ? `${item.title}\n${item.folder}` : item.title}
+                    onClick={() => selectConversation(item.id, false)}
+                  >
+                    {item.cliTarget ? <TerminalSquare size={13} /> : <Sparkles size={13} />}
+                    <span className="chat-tab-title">{item.title}</span>
+                    <span
+                      className="chat-tab-close"
+                      role="button"
+                      aria-label={`Fechar ${item.title}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        closeChatTab(item.id)
+                      }}
+                    >
+                      <X size={12} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="chat-tab-add-wrap" onMouseDown={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className="chat-tab-add"
+                  title="Nova conversa numa worktree"
+                  aria-expanded={agentMenuOpen}
+                  onClick={() => setAgentMenuOpen((open) => !open)}
+                >
+                  <Plus size={14} />
+                </button>
+                {agentMenuOpen && (
+                  <div className="chat-tab-menu" role="menu">
+                    <button type="button" onClick={() => void newAgentTab('same')}>
+                      Mesmo agente
+                    </button>
+                    <button type="button" onClick={() => void newAgentTab('claude')}>
+                      Claude
+                    </button>
+                    <button type="button" onClick={() => void newAgentTab('copilot')}>
+                      Copilot
+                    </button>
+                    <button type="button" onClick={() => void newAgentTab('shell')}>
+                      Shell
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
             <div className="chat-header-actions">
               {activeKind !== 'opencode' && activeFlow && (
                 <span className="team-path" title="O fluxo escolhido na lista de modelos">
@@ -2795,7 +3242,12 @@ export default function App(): JSX.Element {
       </div>
 
       <footer className="app-footer">
-        <UsageFooter items={cliUsage} />
+        <UsageFooter
+          items={cliUsage}
+          conversations={conversations}
+          openTabIds={openTabIds}
+          runningTerminals={runningTerminals}
+        />
       </footer>
 
       {settingsOpen && settings && (

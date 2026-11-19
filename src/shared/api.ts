@@ -106,6 +106,8 @@ export interface OsvaCodeApi {
   writeWorkspaceFile: (folder: string, relativePath: string, text: string) => Promise<void>
   /** Abre um arquivo (ou a pasta inteira) no VS Code como editor padrão. */
   openInVscode: (folder: string, relativePath?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Cria uma worktree git ao lado do repositório para uma conversa isolada. */
+  createWorktree: (folder: string, slug: string) => Promise<{ path: string; branch: string }>
   /** Consulta o catálogo de plugins no servidor configurado. */
   fetchPluginsCatalog: (serverUrl?: string) => Promise<PluginCatalogResult>
   /** Abre uma URL http(s) no navegador embutido. Sem esquema, assume https. */

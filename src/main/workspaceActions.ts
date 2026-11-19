@@ -1,4 +1,4 @@
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'path'
 import { changeBetween } from './changes'
@@ -34,6 +34,34 @@ export interface HunkEdit {
   removed: string[]
   added: string[]
   after: string | null
+}
+
+export function createWorkspaceWorktree(folder: string, slug: string): { path: string; branch: string } {
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: folder,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (top.status !== 0) {
+    throw new Error('Esta pasta não é um repositório git, então não dá para criar uma worktree.')
+  }
+  const root = top.stdout.trim()
+  const safe = slug.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24) || 'aba'
+  const branch = `osvacode/${safe}`
+  const destParent = resolve(dirname(root), `${basename(root)}-worktrees`)
+  mkdirSync(destParent, { recursive: true })
+  const dest = resolve(destParent, safe)
+  if (existsSync(dest)) throw new Error('Já existe uma worktree com esse nome.')
+  const created = spawnSync('git', ['worktree', 'add', '-b', branch, dest, 'HEAD'], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (created.status !== 0) {
+    const message = (created.stderr || created.stdout || 'Não consegui criar a worktree.').trim()
+    throw new Error(message)
+  }
+  return { path: dest, branch }
 }
 
 export function resolveInside(folder: string, input: string): string | null {

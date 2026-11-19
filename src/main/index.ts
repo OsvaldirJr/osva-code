@@ -48,6 +48,7 @@ import {
   startOpenCodeStream
 } from './opencode'
 import {
+  createWorkspaceWorktree,
   listWorkspaceFiles,
   openInVscode,
   readWorkspaceFile,
@@ -307,6 +308,9 @@ function registerIpc(): void {
   })
   ipcMain.handle('workspace:open-vscode', (_event, folder: string, relativePath?: string) =>
     openInVscode(folder, relativePath)
+  )
+  ipcMain.handle('workspace:create-worktree', (_event, folder: string, slug: string) =>
+    createWorkspaceWorktree(folder, slug)
   )
   ipcMain.handle('plugins:catalog', (_event, serverUrl?: string) =>
     fetchPluginsCatalog(serverUrl ?? settings.plugins?.serverUrl)

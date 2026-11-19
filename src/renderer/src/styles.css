@@ -93,12 +93,215 @@ body {
 }
 
 .app-footer-usage {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 16px;
   min-width: 0;
+  height: 100%;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+.usage-hover {
+  position: absolute;
+  left: -4px;
+  bottom: 100%;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.usage-hover-card,
+.usage-hover-detail {
+  width: 360px;
+  max-height: 360px;
+  overflow: auto;
+  background: #1b1e27;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+  padding: 8px;
+}
+
+.usage-hover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.usage-hover-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-hover-col {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.usage-hover-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.usage-hover-refresh:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.usage-hover-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin: 4px 4px 8px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #12141b;
+}
+
+.usage-hover-toggle button {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 5px 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.usage-hover-toggle button.on {
+  background: #2a2e3a;
+  color: var(--text);
+}
+
+.usage-hover-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.usage-hover-row svg:last-child {
+  color: var(--text-dim);
+}
+
+.usage-hover-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+
+.usage-hover-sub,
+.usage-hover-time,
+.usage-hover-updated,
+.usage-hover-empty {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.usage-hover-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-hover-pct {
+  min-width: 36px;
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text);
+}
+
+.usage-hover-pct.ok {
+  color: var(--ok);
+}
+
+.usage-hover-pct.mid {
+  color: var(--warn);
+}
+
+.usage-hover-pct.high {
+  color: var(--err);
+}
+
+.usage-hover-updated,
+.usage-hover-empty {
+  margin: 0;
+  padding: 0 8px 8px;
+  font-size: 12px;
+}
+
+.usage-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 7px 8px 6px;
+}
+
+.usage-meter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.usage-meter-note {
+  color: var(--text-dim);
+}
+
+.usage-meter-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.usage-meter-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.usage-meter-bar span.ok {
+  background: var(--ok);
+}
+
+.usage-meter-bar span.mid {
+  background: var(--warn);
+}
+
+.usage-meter-bar span.high {
+  background: var(--err);
 }
 
 .app-footer-cli {
@@ -1459,10 +1662,10 @@ body {
 
 .chat-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 12px clamp(16px, 6vw, 96px) 12px var(--panel-btn-pad);
+  padding: 8px clamp(16px, 6vw, 96px) 8px var(--panel-btn-pad);
   border-bottom: 1px solid var(--border);
   background: rgba(18, 21, 28, 0.72);
   backdrop-filter: blur(16px);
@@ -1478,6 +1681,122 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chat-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  min-width: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 5px 6px 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.chat-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tab.active {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.chat-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.chat-tab-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.chat-tab-add-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chat-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.chat-tab-add:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.chat-tab-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #161a22;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-tab-menu button {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  border-radius: 7px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.chat-tab-menu button:hover {
+  background: var(--bg-hover);
 }
 
 .folder-chip {

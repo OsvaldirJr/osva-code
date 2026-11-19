@@ -70,6 +70,7 @@ const api: OsvaCodeApi = {
     ipcRenderer.invoke('workspace:write-file', folder, relativePath, text),
   openInVscode: (folder, relativePath) =>
     ipcRenderer.invoke('workspace:open-vscode', folder, relativePath),
+  createWorktree: (folder, slug) => ipcRenderer.invoke('workspace:create-worktree', folder, slug),
   fetchPluginsCatalog: (serverUrl) => ipcRenderer.invoke('plugins:catalog', serverUrl),
   navigateBrowser: (url) => ipcRenderer.invoke('browser:navigate', url),
   openBrowserFile: (relativePath) => ipcRenderer.invoke('browser:open-file', relativePath),
