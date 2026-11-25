@@ -26,7 +26,7 @@ function pathDelimiter(): string {
 }
 
 const PTY_BRIDGE_SCRIPT = `
-import base64, errno, fcntl, json, os, pty, select, signal, struct, sys, termios
+import base64, errno, fcntl, json, os, pty, select, signal, struct, sys, termios, time
 
 shell = sys.argv[1]
 mode = sys.argv[2]
@@ -62,9 +62,18 @@ stdin_fd = sys.stdin.fileno()
 flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
 fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
+# Quando o encerramento foi pedido. Depois do prazo, o processo e morto a forca.
+closing_at = None
+GRACE = 2.0
+
 def emit(obj):
-    sys.stdout.write(json.dumps(obj) + "\\n")
-    sys.stdout.flush()
+    # O app pode ter fechado: sem leitor, o encerramento ainda precisa continuar.
+    raw = (json.dumps(obj) + "\\n").encode("utf-8")
+    try:
+        while raw:
+            raw = raw[os.write(1, raw):]
+    except OSError:
+        pass
 
 def write_all(fd, raw):
     mv = memoryview(raw)
@@ -73,6 +82,8 @@ def write_all(fd, raw):
             written = os.write(fd, mv)
             mv = mv[written:]
         except BlockingIOError:
+            if closing_at is not None:
+                break
             select.select([], [fd], [], 0.1)
         except OSError:
             break
@@ -88,8 +99,14 @@ def kill_child(sig=signal.SIGTERM):
         except OSError:
             pass
 
-def handle_signal(_signum, _frame):
+def begin_close():
+    global closing_at
+    if closing_at is None:
+        closing_at = time.monotonic()
     kill_child(signal.SIGTERM)
+
+def handle_signal(_signum, _frame):
+    begin_close()
 
 signal.signal(signal.SIGTERM, handle_signal)
 signal.signal(signal.SIGHUP, handle_signal)
@@ -98,7 +115,7 @@ stdin_buf = b""
 stdin_open = True
 exit_code = None
 
-while True:
+while closing_at is None:
     watch = [master_fd] + ([stdin_fd] if stdin_open else [])
     try:
         readable, _, _ = select.select(watch, [], [], 0.25)
@@ -131,7 +148,7 @@ while True:
             in_chunk = b""
         if not in_chunk:
             stdin_open = False
-            kill_child(signal.SIGTERM)
+            begin_close()
             break
         stdin_buf += in_chunk
         while b"\\n" in stdin_buf:
@@ -156,7 +173,7 @@ while True:
                 except OSError:
                     pass
             elif mtype == "kill":
-                kill_child(signal.SIGTERM)
+                begin_close()
 
     if exit_code is None:
         try:
@@ -168,21 +185,61 @@ while True:
             exit_code = 0
             break
 
+# Continua lendo o terminal ate o processo sair: com saida pendente e ninguem lendo,
+# ele trava na saida e a ponte ficaria presa esperando.
+if exit_code is None and closing_at is None:
+    begin_close()
+
+drained = False
+killed = False
+deadline = time.monotonic() + (0.2 if exit_code is not None else GRACE)
 while True:
-    try:
-        chunk = os.read(master_fd, 4096)
-        if not chunk:
-            break
-        emit({"type": "data", "data": base64.b64encode(chunk).decode("ascii")})
-    except OSError:
+    if not drained:
+        try:
+            ready, _, _ = select.select([master_fd], [], [], 0.05)
+            if ready:
+                chunk = os.read(master_fd, 4096)
+                if chunk:
+                    emit({"type": "data", "data": base64.b64encode(chunk).decode("ascii")})
+                    if time.monotonic() < deadline:
+                        continue
+                else:
+                    drained = True
+        except InterruptedError:
+            pass
+        except BlockingIOError:
+            pass
+        except OSError:
+            drained = True
+    else:
+        time.sleep(0.05)
+
+    if exit_code is None:
+        try:
+            done_pid, status = os.waitpid(pid, os.WNOHANG)
+            if done_pid == pid:
+                exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+                deadline = min(deadline, time.monotonic() + 0.2)
+        except ChildProcessError:
+            exit_code = 0
+
+    if exit_code is not None and (drained or time.monotonic() >= deadline):
         break
+    if exit_code is None and time.monotonic() >= deadline:
+        if killed:
+            break
+        # Fechar o terminal solta o processo preso na saida; o SIGKILL cobre quem ignora o SIGTERM.
+        killed = True
+        kill_child(signal.SIGKILL)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        drained = True
+        deadline = time.monotonic() + 1.0
 
 if exit_code is None:
-    try:
-        _, status = os.waitpid(pid, 0)
-        exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
-    except ChildProcessError:
-        exit_code = 0
+    exit_code = 0
 
 try:
     os.close(master_fd)
@@ -204,6 +261,10 @@ interface ActiveSession {
   initialFallbackTimer?: ReturnType<typeof setTimeout>
   lineTimer?: ReturnType<typeof setTimeout>
 }
+
+/** Marcas de uma sessão do Claude que abriu o app; herdadas, confundem o CLI filho. */
+export const SESSION_ENV =
+  /^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_(ENTRYPOINT|SIMPLE|SESSION_ID|HOST_SESSION_ID|CHILD_SESSION|MESSAGING_\w+|SDK_HAS_HOST_AUTH_REFRESH))$/
 
 const sessions = new Map<string, ActiveSession>()
 let cachedEnvPath: string | null = null
@@ -343,7 +404,7 @@ function binaryExtensions(): string[] {
   return ['', ...listed]
 }
 
-function findBinary(name: string, envPath: string): string | null {
+export function findBinary(name: string, envPath: string): string | null {
   const extensions = binaryExtensions()
   for (const dir of envPath.split(pathDelimiter())) {
     if (!dir) continue
@@ -380,7 +441,8 @@ function resolveCwd(cwd?: string | null): string {
 function resolveCommandSpec(
   target: TerminalTarget,
   config: TerminalCliConfig | undefined,
-  tools: TerminalToolStatus
+  tools: TerminalToolStatus,
+  login: boolean
 ): { shell: string; mode: 'interactive' | 'command'; command: string; display: string; missingHint?: string } {
   const userShell = config?.shellCommand?.trim() || defaultShell()
 
@@ -393,9 +455,30 @@ function resolveCommandSpec(
     }
   }
 
+  // Primeiro o login; se der certo, o próprio CLI continua aberto no terminal.
+  const withLogin = (command: string, loginArgs: string): string =>
+    login ? `${command} ${loginArgs} && ${command}` : command
+
+  if (target === 'cursor' || target === 'gemini') {
+    const envPath = resolveShellPath()
+    const name = target === 'gemini' ? 'gemini' : findBinary('cursor-agent', envPath) ? 'cursor-agent' : 'agent'
+    return {
+      shell: userShell,
+      mode: 'command',
+      // O Gemini pede o login sozinho ao abrir.
+      command: target === 'cursor' ? withLogin(name, 'login') : name,
+      display: name,
+      missingHint: findBinary(name, envPath)
+        ? undefined
+        : `Aviso: "${name}" não encontrado no PATH. Instale o CLI para usar aqui.\r\n`
+    }
+  }
+
   if (target === 'claude') {
     const custom = config?.claudeCommand?.trim()
-    const command = custom || (process.platform === 'win32' && tools.claude ? tools.claude : 'claude')
+    const command = login
+      ? withLogin(custom || 'claude', 'auth login')
+      : custom || (process.platform === 'win32' && tools.claude ? tools.claude : 'claude')
     const missingHint =
       !custom && !tools.claude
         ? 'Aviso: binário "claude" não encontrado no PATH. Instale o Claude Code (`npm i -g @anthropic-ai/claude-code`) ou ajuste o comando em Configurações → Terminal.\r\n'
@@ -475,6 +558,7 @@ export function startTerminalSession(input: {
   initialInput?: string
   restart?: boolean
   adoptSessionId?: string
+  login?: boolean
   config?: TerminalCliConfig
 }): TerminalSessionInfo {
   const previous = sessions.get(input.sessionId)
@@ -511,7 +595,7 @@ export function startTerminalSession(input: {
   const cwd = resolveCwd(input.cwd)
   const cols = Math.max(10, Math.round(input.cols ?? 96))
   const rows = Math.max(4, Math.round(input.rows ?? 26))
-  const spec = resolveCommandSpec(input.target, input.config, tools)
+  const spec = resolveCommandSpec(input.target, input.config, tools, input.login === true)
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -521,6 +605,7 @@ export function startTerminalSession(input: {
     FORCE_COLOR: '1'
   }
   delete env.NO_COLOR
+  for (const key of Object.keys(env)) if (SESSION_ENV.test(key)) delete env[key]
   if (process.platform === 'win32') {
     for (const key of Object.keys(env)) {
       if (key !== 'PATH' && key.toLowerCase() === 'path') delete env[key]
@@ -776,9 +861,11 @@ export function listCliUsage(): CliUsageStatus[] {
   const sessionOn = (target: TerminalTarget): boolean =>
     sessions.some((item) => item.target === target && item.running)
   const cursorInstalled = Boolean(
-    (local && existsSync(join(local, 'cursor-agent', 'cursor-agent.cmd'))) || findBinary('agent', envPath)
+    (local && existsSync(join(local, 'cursor-agent', 'cursor-agent.cmd'))) ||
+      findBinary('cursor-agent', envPath) ||
+      findBinary('agent', envPath)
   )
-  const geminiInstalled = Boolean(findBinary('gemini', envPath) || existsSync(join(homedir(), '.gemini')))
+  const geminiInstalled = Boolean(findBinary('gemini', envPath))
   return [
     {
       id: 'claude',
@@ -790,7 +877,7 @@ export function listCliUsage(): CliUsageStatus[] {
       id: 'cursor',
       label: 'Cursor',
       installed: cursorInstalled,
-      running: processRunning('agent.exe')
+      running: sessionOn('cursor') || processRunning('agent.exe')
     },
     {
       id: 'copilot',
@@ -802,7 +889,7 @@ export function listCliUsage(): CliUsageStatus[] {
       id: 'gemini',
       label: 'Gemini',
       installed: geminiInstalled,
-      running: processRunning('gemini.exe')
+      running: sessionOn('gemini') || processRunning('gemini.exe')
     }
   ]
 }

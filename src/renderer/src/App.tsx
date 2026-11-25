@@ -12,6 +12,8 @@ import type {
   AutomationHookEvent,
   AuthSession,
   ChatMessage,
+  CliAgentId,
+  CliLimits,
   CliUsageStatus,
   ComposerDestination,
   PickedAttachment,
@@ -25,7 +27,7 @@ import type {
   SlashCommand,
   TerminalTarget
 } from '../../shared/types'
-import { AUTOMATION_HOOK_PORT, modelChoiceValue, parseModelChoice } from '../../shared/types'
+import { AUTOMATION_HOOK_PORT, CLI_AGENT_LABEL, CLI_PREFIX, modelChoiceValue, parseCliChoice, parseModelChoice } from '../../shared/types'
 import type { DesignKind } from '../../shared/design'
 import { DESIGN_KINDS } from '../../shared/design'
 import { AgentCard } from './components/AgentCard'
@@ -70,7 +72,7 @@ export type UiMessage =
       permissionId?: string
       summary?: string
     }
-  | { kind: 'error'; id: string; content: string; resumable?: boolean }
+  | { kind: 'error'; id: string; content: string; resumable?: boolean; loginAgent?: CliAgentId }
   | {
       kind: 'agent'
       id: string
@@ -135,8 +137,12 @@ export interface Conversation {
   folder?: string
   /** 'chat' = conversa simples; 'dev' = pasta e ferramentas daqui; 'opencode' = agente do OpenCode. */
   kind?: ConversationKind
-  /** Sessão criada pelo terminal integrado (Claude, Copilot ou Shell). */
-  cliTarget?: TerminalTarget
+  /** Conversa aberta no Shell integrado. */
+  cliTarget?: 'shell'
+  /** CLI de agente que responde nesta conversa, como se fosse um modelo. */
+  cliAgent?: CliAgentId
+  /** Sessão de cada CLI e quantas mensagens desta conversa ela já conhece. */
+  cliSessions?: Partial<Record<CliAgentId, { sessionId: string; seen: number }>>
   /** Sessão criada no servidor OpenCode para esta conversa. */
   opencodeSessionId?: string
   /** Modelo do OpenCode usado nesta conversa. */
@@ -169,8 +175,7 @@ function formatTokens(value: number): string {
 }
 
 function sessionAgent(conversation: Conversation): { id: string; label: string } {
-  if (conversation.cliTarget === 'claude') return { id: 'claude', label: 'Claude' }
-  if (conversation.cliTarget === 'copilot') return { id: 'copilot', label: 'Copilot' }
+  if (conversation.cliAgent) return { id: conversation.cliAgent, label: CLI_AGENT_LABEL[conversation.cliAgent] }
   if (conversation.cliTarget === 'shell') return { id: 'shell', label: 'Shell' }
   return { id: 'model', label: 'Modelo' }
 }
@@ -240,13 +245,29 @@ function UsageMeter({
   )
 }
 
+function resetLabel(resetsAt: string | null): string | undefined {
+  const date = resetsAt ? new Date(resetsAt) : null
+  if (!date || Number.isNaN(date.getTime())) return undefined
+  const today = date.toDateString() === new Date().toDateString()
+  const time = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  return today
+    ? `zera às ${time}`
+    : `zera ${date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} às ${time}`
+}
+
 function UsageFooter({
   items,
+  limits,
+  refreshing,
+  onRefresh,
   conversations,
   openTabIds,
   runningTerminals
 }: {
   items: CliUsageStatus[]
+  limits: CliLimits[]
+  refreshing: boolean
+  onRefresh: () => void
   conversations: Conversation[]
   openTabIds: string[]
   runningTerminals: string[]
@@ -254,7 +275,13 @@ function UsageFooter({
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<'compact' | 'detailed'>('compact')
   const [hoverId, setHoverId] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
+  const [, setTick] = useState(0)
+
+  // mantém "atualizado há…" andando entre uma leitura e outra
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((value) => value + 1), 15000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const sessions: UsageSession[] = conversations
     .filter((conversation) => {
@@ -316,12 +343,28 @@ function UsageFooter({
       }}
     >
       {items.map((item) => {
-        const label = !item.installed ? 'não instalado' : item.running ? 'em uso' : 'sem uso'
+        const plan = limits.find((entry) => entry.agent === item.id)
+        const label = !item.installed
+          ? 'não instalado'
+          : plan?.problem === 'login'
+            ? 'sem login'
+            : item.running
+              ? 'em uso'
+              : 'sem uso'
         return (
           <span key={item.id} className={`app-footer-cli ${item.running ? 'on' : ''}`}>
             <span className={`app-footer-cli-dot ${item.running ? 'on' : item.installed ? 'idle' : ''}`} />
             <span className="app-footer-model">{item.label}</span>
-            <span className="app-footer-meta">{label}</span>
+            {item.installed && plan && plan.limits.length > 0 ? (
+              plan.limits.map((limit) => (
+                <span key={`${limit.kind}:${limit.label}`} className="app-footer-meta" title={resetLabel(limit.resetsAt)}>
+                  {limit.label}{' '}
+                  <strong className={`usage-hover-pct ${usageTone(limit.percent / 100)}`}>{Math.round(limit.percent)}%</strong>
+                </span>
+              ))
+            ) : (
+              <span className="app-footer-meta">{label}</span>
+            )}
           </span>
         )
       })}
@@ -330,11 +373,32 @@ function UsageFooter({
           <div className="usage-hover-card">
             <div className="usage-hover-head">
               <span>Uso · todos os agentes</span>
-              <button type="button" className="usage-hover-refresh" aria-label="Atualizar" onClick={() => setTick((value) => value + 1)}>
-                <RefreshCw size={13} />
+              <button type="button" className="usage-hover-refresh" aria-label="Atualizar" disabled={refreshing} onClick={onRefresh}>
+                <RefreshCw size={13} className={refreshing ? 'spin' : undefined} />
               </button>
               <span className="usage-hover-col">Usado</span>
             </div>
+            {limits
+              .filter((plan) => plan.limits.length > 0)
+              .map((plan) => (
+                <div key={plan.agent} className="usage-plan">
+                  <p className="usage-hover-updated">
+                    Plano do {items.find((item) => item.id === plan.agent)?.label ?? plan.agent}
+                    {' · '}
+                    {sinceLabel(plan.updatedAt) === 'agora' ? 'atualizado agora' : `atualizado há ${sinceLabel(plan.updatedAt)}`}
+                    {plan.problem === 'failed' ? ' · a última leitura falhou' : ''}
+                  </p>
+                  {plan.limits.map((limit) => (
+                    <UsageMeter
+                      key={`${limit.kind}:${limit.label}`}
+                      label={limit.label}
+                      note={resetLabel(limit.resetsAt)}
+                      value={`${Math.round(limit.percent)}%`}
+                      ratio={Math.min(1, limit.percent / 100)}
+                    />
+                  ))}
+                </div>
+              ))}
             <div className="usage-hover-toggle" role="tablist">
               <button type="button" className={view === 'detailed' ? 'on' : ''} onClick={() => { setView('detailed'); setHoverId(null) }}>
                 Detalhado
@@ -560,6 +624,7 @@ export function folderKey(path: string): string {
 
 const NEW_CONVERSATION_TITLE = 'Nova conversa'
 const CHAT_TABS_KEY = 'osvacode.chatTabs'
+const DRAFT_AGENT_KEY = 'osvacode.chat.agent'
 
 function readChatTabs(): string[] {
   try {
@@ -626,6 +691,21 @@ function designReply(text: string, applied: boolean, problem: string): string {
   return clean.slice(0, 280)
 }
 
+/** Antes, Claude e Copilot abriam o terminal. Agora respondem no próprio chat. */
+function migrateCliTarget(conversation: Conversation): Conversation {
+  const legacy = conversation.cliTarget as TerminalTarget | undefined
+  if (legacy !== 'claude' && legacy !== 'copilot') return conversation
+  return { ...conversation, cliTarget: undefined, cliAgent: conversation.cliAgent ?? legacy }
+}
+
+function readDraftAgent(): CliAgentId | null {
+  try {
+    return parseCliChoice(localStorage.getItem(DRAFT_AGENT_KEY) ?? '')
+  } catch {
+    return null
+  }
+}
+
 function loadConversationsFor(userId: string): Conversation[] {
   try {
     let data = localStorage.getItem(storageKeyFor(userId))
@@ -638,7 +718,7 @@ function loadConversationsFor(userId: string): Conversation[] {
         localStorage.removeItem(LEGACY_STORAGE_KEY)
       }
     }
-    return data ? (JSON.parse(data) as Conversation[]) : []
+    return data ? (JSON.parse(data) as Conversation[]).map(migrateCliTarget) : []
   } catch {
     return []
   }
@@ -674,6 +754,12 @@ export default function App(): JSX.Element {
   docsWidthRef.current = docsWidth
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>('shell')
   const [composerDestination, setComposerDestination] = useState<ComposerDestination>('model')
+  // agente das próximas conversas; a conversa aberta guarda o seu
+  const [draftAgent, setDraftAgent] = useState<CliAgentId | null>(readDraftAgent)
+  // terminal do agente no lugar do chat, para o login
+  const [agentTerminal, setAgentTerminal] = useState<CliAgentId | null>(null)
+  const [agentLogged, setAgentLogged] = useState<boolean | null>(null)
+  const pendingLogin = useRef(new Map<string, CliAgentId>())
   const [runningTerminals, setRunningTerminals] = useState<string[]>([])
   const [fileChanges, setFileChanges] = useState<Record<string, FileChange[]>>({})
   const [commandRuns, setCommandRuns] = useState<Record<string, CommandRun[]>>({})
@@ -707,6 +793,8 @@ export default function App(): JSX.Element {
   const [hookPort, setHookPort] = useState(AUTOMATION_HOOK_PORT)
   const [usageOpen, setUsageOpen] = useState(false)
   const [cliUsage, setCliUsage] = useState<CliUsageStatus[]>([])
+  const [cliLimits, setCliLimits] = useState<CliLimits[]>([])
+  const [limitsBusy, setLimitsBusy] = useState(false)
   const [openTabIds, setOpenTabIds] = useState<string[]>(readChatTabs)
   const [agentMenuOpen, setAgentMenuOpen] = useState(false)
   const usageRef = useRef<HTMLDivElement>(null)
@@ -829,12 +917,87 @@ export default function App(): JSX.Element {
     }
     load()
     const timer = window.setInterval(load, 15000)
-    const stop = window.api.onTerminalEvent(() => load())
+    // só mudanças de estado: a saída do terminal chega dezenas de vezes por segundo
+    const stop = window.api.onTerminalEvent((event) => {
+      if (event.type === 'status' || event.type === 'exit') load()
+    })
     return () => {
       window.clearInterval(timer)
       stop()
     }
   }, [])
+
+  // Uso do plano: a cada minuto, ao voltar para a janela, depois de cada resposta e no botão.
+  const refreshLimits = useCallback(async (fresh: boolean) => {
+    setLimitsBusy(true)
+    try {
+      setCliLimits(await window.api.cliLimits(fresh))
+    } catch {
+      // mantém a última leitura
+    } finally {
+      setLimitsBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const tick = (): void => {
+      if (!document.hidden) void refreshLimits(false)
+    }
+    tick()
+    const timer = window.setInterval(tick, 60000)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [refreshLimits])
+
+  const limitsWereBusy = useRef(false)
+  useEffect(() => {
+    if (limitsWereBusy.current && !busy) void refreshLimits(true)
+    limitsWereBusy.current = busy
+  }, [busy, refreshLimits])
+
+  // login concluído: os números aparecem na hora
+  useEffect(() => {
+    if (agentLogged) void refreshLimits(true)
+  }, [agentLogged, refreshLimits])
+
+  // Modo anônimo: sem login no CLI, o app abre primeiro o terminal de login.
+  const anonymous = session?.user.id === 'local'
+  useEffect(() => {
+    if (!anonymous) {
+      setAgentTerminal(null)
+      return
+    }
+    let cancelled = false
+    const agent = readDraftAgent() ?? 'claude'
+    void window.api.cliAuth(agent).then((status) => {
+      if (!cancelled && status.installed && status.loggedIn === false && !activeIdRef.current) setAgentTerminal(agent)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [anonymous])
+
+  // Enquanto o terminal de login está aberto, percebe quando o login termina.
+  useEffect(() => {
+    setAgentLogged(null)
+    if (!agentTerminal) return
+    let cancelled = false
+    let timer = 0
+    const check = async (): Promise<void> => {
+      const status = await window.api.cliAuth(agentTerminal).catch(() => null)
+      if (cancelled) return
+      setAgentLogged(status?.loggedIn ?? null)
+      if (status?.loggedIn !== true) timer = window.setTimeout(() => void check(), 3000)
+    }
+    void check()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [agentTerminal])
 
   useEffect(() => {
     void window.api.getSettings().then(setSettings)
@@ -1290,6 +1453,31 @@ export default function App(): JSX.Element {
         return
       }
 
+      if (event.type === 'cli-login') {
+        pendingLogin.current.set(requestId, event.agent)
+        return
+      }
+
+      if (event.type === 'cli-session') {
+        setConversations((prev) =>
+          prev.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  cliSessions: {
+                    ...conversation.cliSessions,
+                    [event.agent]: {
+                      sessionId: event.sessionId,
+                      seen: toChatMessages(conversation.messages).length
+                    }
+                  }
+                }
+              : conversation
+          )
+        )
+        return
+      }
+
       if (event.type === 'command-output') {
         setCommandRuns((prev) => {
           const current = prev[conversationId] ?? []
@@ -1319,6 +1507,9 @@ export default function App(): JSX.Element {
         return
       }
 
+      const loginAgent = pendingLogin.current.get(requestId)
+      if (event.type === 'error') pendingLogin.current.delete(requestId)
+
       patchConversation(conversationId, (prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
@@ -1335,9 +1526,16 @@ export default function App(): JSX.Element {
               })
             }
             return next
-          case 'tool-permission':
+          case 'tool-permission': {
             if (last?.kind === 'assistant' && last.streaming) {
               next[next.length - 1] = { ...last, streaming: false }
+            }
+            // os CLIs anunciam a ferramenta antes de pedir a permissão
+            const announced = next.findIndex((m) => m.kind === 'tool' && m.callId === event.callId)
+            const announcedCard = next[announced]
+            if (announcedCard?.kind === 'tool') {
+              next[announced] = { ...announcedCard, status: 'awaiting', permissionId: event.permissionId }
+              return next
             }
             next.push({
               kind: 'tool',
@@ -1350,6 +1548,7 @@ export default function App(): JSX.Element {
               permissionId: event.permissionId
             })
             return next
+          }
           case 'tool-start': {
             if (last?.kind === 'assistant' && last.streaming) {
               next[next.length - 1] = { ...last, streaming: false }
@@ -1408,7 +1607,12 @@ export default function App(): JSX.Element {
               m.kind === 'assistant' && m.streaming ? { ...m, streaming: false } : m
             )
           case 'error':
-            next.push({ kind: 'error', id: crypto.randomUUID(), content: event.message })
+            next.push({
+              kind: 'error',
+              id: crypto.randomUUID(),
+              content: event.message,
+              ...(loginAgent ? { loginAgent } : {})
+            })
             return next.map((m) =>
               m.kind === 'assistant' && m.streaming ? { ...m, streaming: false } : m
             )
@@ -1501,7 +1705,7 @@ export default function App(): JSX.Element {
   }, [])
 
   const sendToTerminal = useCallback(
-    (target: TerminalTarget, rawText: string) => {
+    (target: 'shell', rawText: string) => {
       setTerminalTarget(target)
       setComposerDestination(target)
       if (workbenchOpen && workbenchTab === 'terminal') {
@@ -1627,7 +1831,8 @@ export default function App(): JSX.Element {
             autoTitle: false,
             messages: [userMessage],
             updatedAt: Date.now(),
-            kind: 'chat' as const
+            kind: 'chat' as const,
+            ...(draftAgent ? { cliAgent: draftAgent } : {})
           },
           ...conversationsRef.current
         ]
@@ -1691,8 +1896,15 @@ export default function App(): JSX.Element {
     chatRequestId.current = requestId
     chatTargets.current.set(requestId, conversationId)
     generatingConversation.current = conversationId
-    void window.api.sendChat(requestId, history, { folder, mode, teamId: flowId ? null : teamId, flowId })
-  }, [input, busy, active, activeKind, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel, composerDestination, sendToTerminal])
+    void window.api.sendChat(requestId, history, {
+      folder,
+      mode,
+      teamId: flowId || sent?.cliAgent ? null : teamId,
+      flowId: sent?.cliAgent ? undefined : flowId,
+      cliAgent: sent?.cliAgent,
+      cliSession: sent?.cliAgent ? sent.cliSessions?.[sent.cliAgent] : null
+    })
+  }, [input, busy, active, activeKind, attachments, mode, tab, patchConversation, ocPreferredModel, ocDefaultModel, composerDestination, sendToTerminal, draftAgent])
 
   const toggleRecording = useCallback(() => {
     if (!recognitionRef.current) {
@@ -1745,8 +1957,10 @@ export default function App(): JSX.Element {
     void window.api.sendChat(requestId, history, {
       folder: active.folder,
       mode,
-      teamId: flowId ? null : active.teamId,
-      flowId
+      teamId: flowId || active.cliAgent ? null : active.teamId,
+      flowId: active.cliAgent ? undefined : flowId,
+      cliAgent: active.cliAgent,
+      cliSession: active.cliAgent ? active.cliSessions?.[active.cliAgent] : null
     })
   }, [active, busy, patchConversation, mode])
 
@@ -1813,12 +2027,13 @@ export default function App(): JSX.Element {
         updatedAt: Date.now(),
         kind,
         ...(folder ? { folder } : {}),
-        ...(model ? { opencodeModel: model } : {})
+        ...(model ? { opencodeModel: model } : {}),
+        ...(kind !== 'opencode' && draftAgent ? { cliAgent: draftAgent } : {})
       },
       ...prev
     ])
     setActiveId(id)
-  }, [ocPreferredModel, ocDefaultModel])
+  }, [ocPreferredModel, ocDefaultModel, draftAgent])
 
   // Nova conversa: no DevMode a pasta é o contexto (e o grupo); no Chat cria na hora.
   // O título sai da primeira mensagem, sem pedir um nome.
@@ -1836,11 +2051,16 @@ export default function App(): JSX.Element {
     (id: string, bindCurrentCli: boolean) => {
       const chosen = conversationsRef.current.find((c) => c.id === id)
       setActiveId(id)
+      setAgentTerminal(null)
       if (chosen) setTab(conversationKind(chosen))
       setSection('chats')
       setOpenTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
-      const activeCli = composerDestination !== 'model' ? composerDestination : null
-      const linked = chosen?.cliTarget ?? (bindCurrentCli ? activeCli : null)
+      // só uma conversa vazia pode passar a pertencer ao Shell aberto
+      const activeShell =
+        bindCurrentCli && composerDestination === 'shell' && !chosen?.cliAgent && chosen?.messages.length === 0
+          ? composerDestination
+          : null
+      const linked = chosen?.cliTarget ?? activeShell
       if (linked) {
         setTerminalTarget(linked)
         setComposerDestination(linked)
@@ -1860,7 +2080,7 @@ export default function App(): JSX.Element {
   )
 
   const newAgentTab = useCallback(
-    async (agent: 'same' | TerminalTarget) => {
+    async (agent: 'same' | 'shell' | CliAgentId) => {
       setAgentMenuOpen(false)
       const source = conversationsRef.current.find((c) => c.id === activeIdRef.current)
       const base = source?.folder
@@ -1881,10 +2101,11 @@ export default function App(): JSX.Element {
         window.alert(err instanceof Error ? err.message : 'Não consegui criar a worktree.')
         return
       }
-      const cliTarget = agent === 'same' ? source?.cliTarget : agent
+      const cliTarget = agent === 'same' ? source?.cliTarget : agent === 'shell' ? agent : undefined
+      const cliAgent = agent === 'same' ? source?.cliAgent : agent === 'shell' ? undefined : agent
       const kind = source && conversationKind(source) !== 'opencode' ? conversationKind(source) : 'dev'
       const agentName =
-        cliTarget === 'claude' ? 'Claude' : cliTarget === 'copilot' ? 'Copilot' : cliTarget === 'shell' ? 'Shell' : 'Modelo'
+        cliAgent ? CLI_AGENT_LABEL[cliAgent] : cliTarget === 'shell' ? 'Shell' : 'Modelo'
       const slug = path.split(/[/\\]/).pop() || 'worktree'
       const createdConversation: Conversation = {
         id,
@@ -1894,7 +2115,8 @@ export default function App(): JSX.Element {
         updatedAt: Date.now(),
         kind,
         folder: folderKey(path),
-        ...(cliTarget ? { cliTarget } : {})
+        ...(cliTarget ? { cliTarget } : {}),
+        ...(cliAgent ? { cliAgent } : {})
       }
       const nextConversations = [createdConversation, ...conversationsRef.current]
       conversationsRef.current = nextConversations
@@ -1932,6 +2154,7 @@ export default function App(): JSX.Element {
   const changeTab = useCallback((next: ConversationKind) => {
     setTab(next)
     setActiveId(null)
+    setAgentTerminal(null)
     setComposerDestination('model')
   }, [])
 
@@ -2207,6 +2430,19 @@ export default function App(): JSX.Element {
   const changeProvider = useCallback(
     (value: string) => {
       if (!settings) return
+      const agent = parseCliChoice(value)
+      const current = conversationsRef.current.find((c) => c.id === activeIdRef.current)
+      if (current && conversationKind(current) !== 'opencode') {
+        const updated = conversationsRef.current.map((c) =>
+          c.id === current.id ? { ...c, cliAgent: agent ?? undefined } : c
+        )
+        conversationsRef.current = updated
+        setConversations(updated)
+      }
+      setDraftAgent(agent)
+      if (agent) localStorage.setItem(DRAFT_AGENT_KEY, `${CLI_PREFIX}${agent}`)
+      else localStorage.removeItem(DRAFT_AGENT_KEY)
+      if (agent) return
       const choice = parseModelChoice(value)
       const next = {
         ...settings,
@@ -2219,11 +2455,26 @@ export default function App(): JSX.Element {
     [settings]
   )
 
+  const activeAgent: CliAgentId | null = active ? (active.cliAgent ?? null) : draftAgent
+  const modelValue = activeAgent
+    ? `${CLI_PREFIX}${activeAgent}`
+    : modelChoiceValue(settings?.activeProviderId ?? null, settings?.activeFlowId)
+  const agentStage = tab !== 'opencode' && activeKind !== 'opencode' ? agentTerminal : null
+  const exitAgentTerminal = (): void => {
+    // com o login feito, o chat já abre falando com esse agente
+    if (agentTerminal && agentLogged) changeProvider(`${CLI_PREFIX}${agentTerminal}`)
+    setAgentTerminal(null)
+  }
+  const answererName = activeAgent
+    ? CLI_AGENT_LABEL[activeAgent]
+    : (settings?.providers.find((p) => p.id === settings.activeProviderId)?.name ?? 'seu modelo')
   const activeProvider = settings?.providers.find((p) => p.id === settings.activeProviderId)
   const activeFlow = settings?.activeFlowId
     ? ((settings.flows ?? []).find((item) => item.id === settings.activeFlowId) ?? null)
     : null
-  const modelMenuLabel = activeFlow
+  const modelMenuLabel = activeAgent
+    ? CLI_AGENT_LABEL[activeAgent]
+    : activeFlow
     ? activeFlow.name.trim() || 'Fluxo sem nome'
     : activeProvider?.name || 'Modelo'
   const openCodeModel =
@@ -2305,10 +2556,13 @@ export default function App(): JSX.Element {
           onNew={() => {
             setSection('chats')
             setComposerDestination('model')
+            setAgentTerminal(null)
             void startNewConversation()
           }}
           onDelete={deleteConversation}
           onChangeProvider={changeProvider}
+          cliAgent={activeAgent}
+          agents={cliUsage}
           onOpenSettings={() => setSettingsOpen(true)}
           section={section}
           onSectionChange={setSection}
@@ -2457,7 +2711,7 @@ export default function App(): JSX.Element {
                     title={item.folder ? `${item.title}\n${item.folder}` : item.title}
                     onClick={() => selectConversation(item.id, false)}
                   >
-                    {item.cliTarget ? <TerminalSquare size={13} /> : <Sparkles size={13} />}
+                    {item.cliTarget === 'shell' ? <TerminalSquare size={13} /> : <Sparkles size={13} />}
                     <span className="chat-tab-title">{item.title}</span>
                     <span
                       className="chat-tab-close"
@@ -2491,6 +2745,12 @@ export default function App(): JSX.Element {
                     <button type="button" onClick={() => void newAgentTab('claude')}>
                       Claude
                     </button>
+                    <button type="button" onClick={() => void newAgentTab('cursor')}>
+                      Cursor
+                    </button>
+                    <button type="button" onClick={() => void newAgentTab('gemini')}>
+                      Gemini
+                    </button>
                     <button type="button" onClick={() => void newAgentTab('copilot')}>
                       Copilot
                     </button>
@@ -2502,12 +2762,12 @@ export default function App(): JSX.Element {
               </div>
             </div>
             <div className="chat-header-actions">
-              {activeKind !== 'opencode' && activeFlow && (
+              {activeKind !== 'opencode' && !activeAgent && activeFlow && (
                 <span className="team-path" title="O fluxo escolhido na lista de modelos">
                   Fluxo · {activeFlow.name.trim() || 'Fluxo sem nome'}
                 </span>
               )}
-              {activeKind !== 'opencode' && !activeFlow && (settings?.teams?.length ?? 0) > 0 && (
+              {activeKind !== 'opencode' && !activeAgent && !activeFlow && (settings?.teams?.length ?? 0) > 0 && (
                 <label className="team-select">
                   Equipe
                   <select
@@ -2523,7 +2783,7 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               )}
-              {activeKind !== 'opencode' && !activeFlow && activeTeam && activeTeam.steps.length > 0 && (
+              {activeKind !== 'opencode' && !activeAgent && !activeFlow && activeTeam && activeTeam.steps.length > 0 && (
                 <span className="team-path" title="Ordem dos modelos nesta tarefa">
                   {activeTeam.steps.map((step, index) => {
                     const provider = settings?.providers.find((p) => p.id === step.providerId)
@@ -2553,15 +2813,47 @@ export default function App(): JSX.Element {
         )}
         {section === 'chats' && (
         <>
-        {tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model' ? (
+        {agentStage ? (
+          <div className="chat-terminal-stage">
+            <div className="agent-login-bar">
+              <span>
+                {agentLogged
+                  ? `Login no ${CLI_AGENT_LABEL[agentStage]} feito. Continue no terminal ou passe para o chat.`
+                  : `Faça o login no ${CLI_AGENT_LABEL[agentStage]} abaixo. Depois, se quiser, passe para o chat.`}
+              </span>
+              <button type="button" onClick={exitAgentTerminal}>
+                Ir para o chat
+              </button>
+            </div>
+            <IntegratedTerminal
+              conversationKey="__login__"
+              target={agentStage}
+              onTargetChange={(next) => {
+                if (next !== 'shell') {
+                  setAgentTerminal(next)
+                  return
+                }
+                setAgentTerminal(null)
+                setTerminalTarget('shell')
+                setComposerDestination('shell')
+              }}
+              hideInputBar
+              login
+            />
+          </div>
+        ) : tab !== 'opencode' && activeKind !== 'opencode' && composerDestination !== 'model' ? (
           <div className="chat-terminal-stage">
             <IntegratedTerminal
               conversationKey={workbenchKey}
               folder={active?.folder ?? null}
               target={composerDestination}
               onTargetChange={(next) => {
-                setTerminalTarget(next)
-                setComposerDestination(next)
+                if (next === 'shell') {
+                  setTerminalTarget(next)
+                  return
+                }
+                setComposerDestination('model')
+                setAgentTerminal(next)
               }}
               hideInputBar
               onExitToChat={() => setComposerDestination('model')}
@@ -2609,7 +2901,7 @@ export default function App(): JSX.Element {
                   <>
                     <p>
                       Pasta <strong>{active.folder ? folderLabel(active.folder) : 'sem pasta'}</strong>{' '}
-                      pronta. Converse com <strong>{activeProvider?.name ?? 'seu modelo'}</strong> — ele
+                      pronta. Converse com <strong>{answererName}</strong> — ele
                       pode ler e escrever arquivos em <code>{shortPath(active.folder ?? '')}</code>.
                     </p>
                     <p className="hint">
@@ -2619,7 +2911,7 @@ export default function App(): JSX.Element {
                 ) : (
                   <>
                     <p>
-                      Conversa pronta. Fale com <strong>{activeProvider?.name ?? 'seu modelo'}</strong>.
+                      Conversa pronta. Fale com <strong>{answererName}</strong>.
                       Sem pasta de trabalho nem ferramentas de arquivo. O título passa a ser o assunto
                       da primeira mensagem.
                     </p>
@@ -2672,30 +2964,26 @@ export default function App(): JSX.Element {
                     da primeira mensagem.
                   </p>
                   <p className="hint">
-                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou abra o terminal integrado para rodar comandos no Claude ou Copilot.
+                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou escolha Claude, Cursor, Copilot ou Gemini na lista de modelos.
                   </p>
                   <div className="empty-terminal-actions">
                     <button
                       type="button"
                       className="folder-chip"
                       onClick={() => {
-                        setTerminalTarget('claude')
-                        setComposerDestination('claude')
-                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+                        changeProvider('cli:claude')
                       }}
                     >
-                      <TerminalSquare size={14} /> Abrir Claude no terminal
+                      <Sparkles size={14} /> Conversar com Claude
                     </button>
                     <button
                       type="button"
                       className="folder-chip"
                       onClick={() => {
-                        setTerminalTarget('copilot')
-                        setComposerDestination('copilot')
-                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+                        changeProvider('cli:copilot')
                       }}
                     >
-                      <TerminalSquare size={14} /> Abrir Copilot no terminal
+                      <Sparkles size={14} /> Conversar com Copilot
                     </button>
                     <button
                       type="button"
@@ -2717,30 +3005,26 @@ export default function App(): JSX.Element {
                     e escolha a pasta. O modelo ganha ferramentas para ler e editar os arquivos dela.
                   </p>
                   <p className="hint">
-                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou use o terminal integrado abaixo com Claude ou Copilot.
+                    Dica: adicione modelos e servidores MCP em <em style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Settings size={14} /> Configurações</em>, ou escolha Claude, Cursor, Copilot ou Gemini na lista de modelos.
                   </p>
                   <div className="empty-terminal-actions">
                     <button
                       type="button"
                       className="folder-chip"
                       onClick={() => {
-                        setTerminalTarget('claude')
-                        setComposerDestination('claude')
-                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+                        changeProvider('cli:claude')
                       }}
                     >
-                      <TerminalSquare size={14} /> Abrir Claude no terminal
+                      <Sparkles size={14} /> Conversar com Claude
                     </button>
                     <button
                       type="button"
                       className="folder-chip"
                       onClick={() => {
-                        setTerminalTarget('copilot')
-                        setComposerDestination('copilot')
-                        if (workbenchOpen && workbenchTab === 'terminal') setWorkbenchOpen(false)
+                        changeProvider('cli:copilot')
                       }}
                     >
-                      <TerminalSquare size={14} /> Abrir Copilot no terminal
+                      <Sparkles size={14} /> Conversar com Copilot
                     </button>
                   </div>
                 </>
@@ -2759,6 +3043,7 @@ export default function App(): JSX.Element {
                     key={m.id}
                     message={m.content}
                     resumable={m.resumable}
+                    onLogin={m.loginAgent ? () => setAgentTerminal(m.loginAgent ?? null) : undefined}
                     canRetry={!busy}
                     onRetry={retry}
                   />
@@ -2790,7 +3075,7 @@ export default function App(): JSX.Element {
         </div>
         )}
 
-        <footer className="composer-area">
+        <footer className="composer-area" hidden={agentStage !== null}>
           {(() => {
             const changes = activeId ? fileChanges[activeId] ?? [] : []
             const additions = changes.reduce((sum, change) => sum + change.additions, 0)
@@ -2930,11 +3215,7 @@ export default function App(): JSX.Element {
                 !composerEnabled
                   ? 'Crie uma conversa no menu para começar'
                   : terminalModeActive
-                    ? composerDestination === 'claude'
-                      ? 'Digite um comando ou pedido para passar ao Claude no terminal…'
-                      : composerDestination === 'copilot'
-                        ? 'Digite um comando ou pedido para passar ao Copilot no terminal…'
-                        : 'Digite um comando para passar ao terminal integrado…'
+                    ? 'Digite um comando para passar ao terminal integrado…'
                     : messages.length > 0
                       ? 'Envie uma continuação  ·  / para ações e skills'
                       : 'Envie uma mensagem  ·  / para ações e skills'
@@ -2999,19 +3280,15 @@ export default function App(): JSX.Element {
                   </select>
                 </label>
               ) : terminalModeActive ? (
-                <span className="composer-terminal-badge">
-                  {composerDestination === 'claude'
-                    ? 'Claude CLI'
-                    : composerDestination === 'copilot'
-                      ? 'Copilot CLI'
-                      : 'Shell'}
-                </span>
+                <span className="composer-terminal-badge">Shell</span>
               ) : (
-                settings && (settings.providers.length > 0 || (settings.flows ?? []).length > 0) && (
+                settings && (settings.providers.length > 0 || (settings.flows ?? []).length > 0 || cliUsage.length > 0) && (
                 <label
                   className="composer-model"
                   title={
-                    activeFlow
+                    activeAgent
+                      ? CLI_AGENT_LABEL[activeAgent]
+                      : activeFlow
                       ? activeFlow.name
                       : activeProvider
                         ? `${activeProvider.name} · ${activeProvider.model}`
@@ -3021,11 +3298,11 @@ export default function App(): JSX.Element {
                   <span>{modelMenuLabel}</span>
                   <ChevronDown size={14} />
                   <select
-                    value={modelChoiceValue(settings.activeProviderId, settings.activeFlowId)}
+                    value={modelValue}
                     onChange={(e) => changeProvider(e.target.value)}
                     disabled={busy}
                   >
-                    <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} />
+                    <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} agents={cliUsage} />
                   </select>
                 </label>
                 )
@@ -3069,22 +3346,21 @@ export default function App(): JSX.Element {
               {tab !== 'opencode' && activeKind !== 'opencode' && (
                 <label
                   className={`composer-meta-btn composer-dest ${composerDestination !== 'model' ? 'terminal-on' : ''}`}
-                  title="Escolha se o que você digita vai para o modelo ou direto para o terminal integrado (Claude, Copilot ou Shell)"
+                  title="Escolha se o que você digita vai para o chat ou direto para o Shell"
                 >
                   <TerminalSquare size={13} />
                   <span>
-                    {composerDestination === 'model'
-                      ? 'Enviar para: Modelo'
-                      : composerDestination === 'claude'
-                        ? 'Terminal · Claude'
-                        : composerDestination === 'copilot'
-                          ? 'Terminal · Copilot'
-                          : 'Terminal · Shell'}
+                    {composerDestination === 'model' ? 'Enviar para: Chat' : 'Terminal · Shell'}
                   </span>
                   <ChevronDown size={13} />
                   <select
                     value={composerDestination}
                     onChange={(e) => {
+                      if (e.target.value === 'agent') {
+                        setComposerDestination('model')
+                        setAgentTerminal(activeAgent ?? 'claude')
+                        return
+                      }
                       const next = e.target.value as ComposerDestination
                       setComposerDestination(next)
                       if (next !== 'model') {
@@ -3095,9 +3371,8 @@ export default function App(): JSX.Element {
                       }
                     }}
                   >
-                    <option value="model">Modelo (Chat)</option>
-                    <option value="claude">Claude (Terminal)</option>
-                    <option value="copilot">Copilot (Terminal)</option>
+                    <option value="model">Chat</option>
+                    <option value="agent">{CLI_AGENT_LABEL[activeAgent ?? 'claude']} (Terminal e login)</option>
                     <option value="shell">Shell (Terminal)</option>
                   </select>
                 </label>
@@ -3142,7 +3417,9 @@ export default function App(): JSX.Element {
                     ? openCodeModel
                       ? `${openCodeModel.providerID}/${openCodeModel.id}`
                       : ''
-                    : activeFlow
+                    : activeAgent
+                      ? 'agente deste computador'
+                      : activeFlow
                       ? 'fluxo'
                       : (activeProvider?.model ?? '')
                 }
@@ -3173,7 +3450,8 @@ export default function App(): JSX.Element {
               if (terminalModeActive) {
                 setComposerDestination('model')
               } else {
-                setComposerDestination(terminalTarget)
+                setTerminalTarget('shell')
+                setComposerDestination('shell')
                 if (workbenchOpen && workbenchTab === 'terminal') {
                   setWorkbenchOpen(false)
                 }
@@ -3244,6 +3522,12 @@ export default function App(): JSX.Element {
       <footer className="app-footer">
         <UsageFooter
           items={cliUsage}
+          limits={cliLimits}
+          refreshing={limitsBusy}
+          onRefresh={() => {
+            void refreshLimits(true)
+            void window.api.cliUsage().then(setCliUsage)
+          }}
           conversations={conversations}
           openTabIds={openTabIds}
           runningTerminals={runningTerminals}

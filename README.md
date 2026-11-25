@@ -10,9 +10,9 @@ com suporte a **servidores MCP** (ferramentas/plugins), **terminal integrado** e
   rodapé do menu. A bolinha ao lado do campo mostra o uso de tokens da conversa.
 - 🗂️ **Menu lateral** — Nova conversa, Pesquisa, Automatização e Design. O menu pode ser
   minimizado para uma faixa de ícones. Chat, DevMode e OpenCode aparecem só como ícones.
-  As conversas da mesma pasta ficam juntas. Uma conversa feita no Claude, no Copilot ou no
-  Shell continua ligada a essa sessão: ao selecioná-la de novo, o terminal abre com o
-  contexto dela.
+  As conversas da mesma pasta ficam juntas. Uma conversa com Claude, Cursor, Copilot ou
+  Gemini guarda a sessão do agente e continua de onde parou. Uma conversa do Shell reabre
+  o terminal dela.
 - 📁 **Painel** — o botão **Painel** abre o card na esquerda e recolhe o menu de conversas.
   A primeira aba é **Documentos**. A borda entre o painel e o chat pode ser arrastada, e a
   largura fica gravada. Dentro do card ficam Documentos, VS Code, a pasta de trabalho e o
@@ -21,11 +21,18 @@ com suporte a **servidores MCP** (ferramentas/plugins), **terminal integrado** e
   aplicativo, no editor do VS Code (Monaco), com o tema escuro e as cores da linguagem.
   Dá para editar e gravar com **Salvar** ou Ctrl+S. Imagem continua imagem. Arquivo maior
   que 2 MB abre só o começo, somente para leitura.
-- 🖥️ **Terminal integrado** — Shell, Claude Code e Copilot rodam no lugar do chat. No Windows
+- 🤝 **Agentes no chat** — Claude, Cursor, Copilot e Gemini aparecem na lista de modelos e
+  respondem no próprio chat, com streaming, cartões de ferramenta e pedidos de permissão.
+  O CLI precisa estar instalado. No modo anônimo, se faltar o login,
+  o app abre primeiro no terminal do agente; depois é só clicar em **Ir para o chat**.
+- 🖥️ **Terminal integrado** — o Shell roda no lugar do chat; Claude Code e Copilot continuam
+  disponíveis como terminal em Painel → Terminal. No Windows
   o processo sobe por ConPTY (`node-pty`); no macOS e no Linux, pelo ponte Python. A sessão
   fica presa à conversa.
 - 📊 **Rodapé** — faixa na largura da janela. À esquerda, o estado dos modelos de terminal:
   Claude, Cursor, Copilot e Gemini. Cada um mostra **em uso**, **sem uso** ou **não instalado**.
+  Com login, o Claude mostra o uso do plano (sessão e semana), atualizado a cada minuto e
+  depois de cada resposta. Os outros CLIs não informam esse número.
 - 📎 **Anexos** — o botão **+** envia imagem, arquivo ou pasta. Imagens vão para modelos que
   enxergam; arquivos e pastas entram como texto, com limite de tamanho. Segredos (`.env`, chaves)
   são listados sem o conteúdo.

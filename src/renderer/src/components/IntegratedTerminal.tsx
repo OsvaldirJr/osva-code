@@ -8,7 +8,9 @@ import type { TerminalSessionInfo, TerminalTarget } from '../../../shared/types'
 const TARGETS: { id: TerminalTarget; label: string }[] = [
   { id: 'shell', label: 'Shell' },
   { id: 'claude', label: 'Claude' },
-  { id: 'copilot', label: 'Copilot' }
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'copilot', label: 'Copilot' },
+  { id: 'gemini', label: 'Gemini' }
 ]
 
 export function terminalSessionId(conversationKey: string, target: TerminalTarget): string {
@@ -27,6 +29,7 @@ export function IntegratedTerminal({
   target,
   onTargetChange,
   hideInputBar,
+  login,
   onExitToChat
 }: {
   conversationKey: string
@@ -34,6 +37,8 @@ export function IntegratedTerminal({
   target: TerminalTarget
   onTargetChange: (target: TerminalTarget) => void
   hideInputBar?: boolean
+  /** Faz o login do CLI primeiro, se ele estiver deslogado. */
+  login?: boolean
   onExitToChat?: () => void
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -187,14 +192,15 @@ export function IntegratedTerminal({
       if (hideInputBarRef.current) {
         requestAnimationFrame(() => term.focus())
       }
-      if (!res.session) {
+      if (!res.session || (login && !res.session.running)) {
         void window.api
           .terminalStart({
             sessionId,
             target,
             cwd: effectiveCwd,
             cols: term.cols,
-            rows: term.rows
+            rows: term.rows,
+            login
           })
           .then((info) => {
             if (!disposed) setSessionsMap((prev) => ({ ...prev, [sessionId]: info }))
@@ -211,7 +217,7 @@ export function IntegratedTerminal({
       termRef.current = null
       fitRef.current = null
     }
-  }, [sessionId, target, effectiveCwd])
+  }, [sessionId, target, effectiveCwd, login])
 
   const startOrRestart = (restart: boolean, initialInput?: string): void => {
     const cols = termRef.current?.cols ?? 96
@@ -225,6 +231,7 @@ export function IntegratedTerminal({
         cols,
         rows,
         restart,
+        login,
         ...(initialInput !== undefined ? { initialInput } : {})
       })
       .then((info) => {

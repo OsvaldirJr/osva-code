@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { PermissionDecision } from '../../../shared/types'
 import type { UiMessage } from '../App'
@@ -30,6 +30,11 @@ export function ToolCallCard({
 }): JSX.Element {
   // colapsado por padrão: mostra só o comando. Abre sozinho ao pedir permissão.
   const [open, setOpen] = useState(message.status === 'awaiting')
+
+  // o cartão pode já estar na tela quando o agente pede a permissão
+  useEffect(() => {
+    if (message.status === 'awaiting') setOpen(true)
+  }, [message.status])
 
   const respond = (decision: PermissionDecision): void => {
     if (message.permissionId) onRespond(message.permissionId, decision)

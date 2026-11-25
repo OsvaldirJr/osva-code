@@ -6,6 +6,9 @@ import type {
   AutomationHookEvent,
   ChatEventPayload,
   ChatMessage,
+  CliAgentId,
+  CliAuthStatus,
+  CliLimits,
   CliUsageStatus,
   FileChange,
   OpenCodeFileDiff,
@@ -144,6 +147,8 @@ export interface OsvaCodeApi {
     rows?: number
     initialInput?: string
     restart?: boolean
+    /** Faz o login do CLI primeiro, se ele ainda estiver deslogado. */
+    login?: boolean
     adoptSessionId?: string
   }) => Promise<TerminalSessionInfo>
   terminalWrite: (sessionId: string, data: string) => Promise<void>
@@ -153,5 +158,8 @@ export interface OsvaCodeApi {
   terminalHistory: (sessionId: string) => Promise<{ session: TerminalSessionInfo | null; buffer: string }>
   terminalList: () => Promise<TerminalSessionInfo[]>
   cliUsage: () => Promise<CliUsageStatus[]>
+  /** Uso do plano de cada CLI. `fresh` pede uma leitura nova agora. */
+  cliLimits: (fresh?: boolean) => Promise<CliLimits[]>
+  cliAuth: (agent: CliAgentId) => Promise<CliAuthStatus>
   onTerminalEvent: (callback: (event: TerminalEvent) => void) => () => void
 }
