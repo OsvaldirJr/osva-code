@@ -8,9 +8,11 @@ import {
   browserState,
   setBrowserBounds
 } from './browser'
+import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { DEFAULT_OPENWEBUI_URL, loadSettings, saveSettings } from './config'
+import { cliAuthStatus, readCliLimits, closeAllCliAgents, isCliAgentRunning, runCliAgent } from './cliAgents'
 import { McpManager } from './mcp'
 import { runTeam } from './agents'
 import { runFlow } from './flows'
@@ -73,7 +75,10 @@ import {
 } from './terminal'
 import { AUTOMATION_HOOK_PORT } from '../shared/types'
 import { designInstructions } from '../shared/design'
-import type { AutomationHookEvent, OpenCodeModel, OpenCodeNotice } from '../shared/types'
+import type {
+  CliAgentId,
+  TerminalTarget,
+ AutomationHookEvent, OpenCodeModel, OpenCodeNotice } from '../shared/types'
 import type {
   AppSettings,
   AuthSession,
@@ -385,7 +390,7 @@ function registerIpc(): void {
       const flow = options?.flowId
         ? (settings.flows ?? []).find((item) => item.id === options.flowId)
         : undefined
-      const useFlow = !!options?.flowId && !options?.design
+      const useFlow = !!options?.flowId && !options?.design && !options?.cliAgent
       const useTeam = !!team && team.steps.length > 0
       if (useFlow && !flow) {
         emitTo(requestId, {
@@ -394,7 +399,8 @@ function registerIpc(): void {
         })
         return
       }
-      if (!useFlow && (!useTeam || options?.design) && !provider) {
+      const cliAgent = options?.design ? null : (options?.cliAgent ?? null)
+      if (!cliAgent && !useFlow && (!useTeam || options?.design) && !provider) {
         emitTo(requestId, {
           type: 'error',
           message: 'Nenhum provedor de modelo configurado. Abra as Configurações.'
@@ -443,6 +449,25 @@ function registerIpc(): void {
       const emit = (event: Parameters<typeof emitTo>[1]): void => emitTo(requestId, event)
       const requestPermission = (request: PermissionRequest): Promise<'allow' | 'deny'> =>
         resolvePermission(requestId, request, controller.signal)
+      if (cliAgent) {
+        // Sem pasta na conversa, o CLI fica numa pasta própria, nunca na home inteira.
+        const cwd = folder ?? join(app.getPath('userData'), 'cli-chat')
+        if (!folder) mkdirSync(cwd, { recursive: true })
+        void runCliAgent({
+          agent: cliAgent,
+          config: settings.terminal,
+          cwd,
+          folder,
+          systemPrompt,
+          history,
+          resume: options?.cliSession,
+          allowFileWrites: mode !== 'propose',
+          emit,
+          requestPermission,
+          signal: controller.signal
+        }).finally(() => activeRequests.delete(requestId))
+        return
+      }
       const run = useFlow
         ? runFlow({
             flow: flow!,
@@ -658,26 +683,37 @@ function registerIpc(): void {
     mainWindow.webContents.send('terminal:event', event)
   })
   ipcMain.handle('terminal:tools', () => detectTerminalTools())
-  ipcMain.handle('cli:usage', () => listCliUsage())
+  ipcMain.handle('cli:limits', (_event, fresh?: boolean) => readCliLimits(settings.terminal, fresh === true))
+  ipcMain.handle('cli:auth', (_event, agent: CliAgentId) => cliAuthStatus(agent, settings.terminal))
+  ipcMain.handle('cli:usage', () =>
+    listCliUsage().map((item) => ({ ...item, running: item.running || isCliAgentRunning(item.id) }))
+  )
   ipcMain.handle(
     'terminal:start',
-    (
+    async (
       _event,
       input: {
         sessionId: string
-        target: 'shell' | 'claude' | 'copilot'
+        target: TerminalTarget
         cwd?: string | null
         cols?: number
         rows?: number
         initialInput?: string
         restart?: boolean
         adoptSessionId?: string
+        login?: boolean
       }
-    ) =>
-      startTerminalSession({
-        ...input,
-        config: settings.terminal
-      })
+    ) => {
+      let { cwd, login } = input
+      if (login && input.target !== 'shell') {
+        login = (await cliAuthStatus(input.target, settings.terminal)).loggedIn === false
+        if (!cwd) {
+          cwd = join(app.getPath('userData'), 'cli-chat')
+          mkdirSync(cwd, { recursive: true })
+        }
+      }
+      return startTerminalSession({ ...input, cwd, login, config: settings.terminal })
+    }
   )
   ipcMain.handle('terminal:write', (_event, sessionId: string, data: string) => {
     writeTerminalSession(sessionId, data)
@@ -830,5 +866,6 @@ app.on('before-quit', () => {
   quitting = true
   stopTunnel()
   closeAllTerminals()
+  closeAllCliAgents()
   void mcp.closeAll()
 })

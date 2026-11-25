@@ -5418,3 +5418,49 @@ body.docs-resizing {
   color: var(--ok);
   white-space: nowrap;
 }
+
+.agent-login-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.agent-login-bar button {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid rgba(139, 156, 255, 0.35);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-area[hidden] {
+  display: none;
+}
+
+.app-footer-meta .usage-hover-pct {
+  font-size: inherit;
+}
+
+.usage-plan {
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-hover-refresh .spin {
+  animation: usage-spin 0.9s linear infinite;
+}
+
+@keyframes usage-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

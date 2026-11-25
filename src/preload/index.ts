@@ -97,6 +97,8 @@ const api: OsvaCodeApi = {
     ipcRenderer.on('opencode:event', listener)
     return () => ipcRenderer.removeListener('opencode:event', listener)
   },
+  cliLimits: (fresh) => ipcRenderer.invoke('cli:limits', fresh),
+  cliAuth: (agent) => ipcRenderer.invoke('cli:auth', agent),
   terminalTools: () => ipcRenderer.invoke('terminal:tools'),
   terminalStart: (input) => ipcRenderer.invoke('terminal:start', input),
   terminalWrite: (sessionId, data) => ipcRenderer.invoke('terminal:write', sessionId, data),

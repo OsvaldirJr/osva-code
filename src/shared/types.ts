@@ -34,10 +34,53 @@ export interface OpenCodeConfig {
 }
 
 /** Alvo de execução do terminal integrado. */
-export type TerminalTarget = 'shell' | 'claude' | 'copilot'
+export type TerminalTarget = 'shell' | CliAgentId
+
+/** CLIs de agente que respondem no chat como um modelo, sem terminal. */
+export type CliAgentId = 'claude' | 'cursor' | 'copilot' | 'gemini'
+
+export const CLI_AGENT_LABEL: Record<CliAgentId, string> = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  copilot: 'Copilot',
+  gemini: 'Gemini'
+}
+
+/** Prefixo na lista de modelos quando o valor escolhido é um CLI de agente. */
+export const CLI_PREFIX = 'cli:'
+
+export function parseCliChoice(value: string): CliAgentId | null {
+  const id = value.startsWith(CLI_PREFIX) ? value.slice(CLI_PREFIX.length) : ''
+  return Object.hasOwn(CLI_AGENT_LABEL, id) ? (id as CliAgentId) : null
+}
+
+/** Login de um CLI. `loggedIn` é null quando o CLI não informa. */
+export interface CliAuthStatus {
+  agent: CliAgentId
+  installed: boolean
+  loggedIn: boolean | null
+}
+
+/** Um limite do plano: quanto já foi usado e quando zera. */
+export interface CliLimit {
+  kind: string
+  label: string
+  percent: number
+  resetsAt: string | null
+}
+
+/** Uso do plano de um CLI, consultado de tempos em tempos. */
+export interface CliLimits {
+  agent: CliAgentId
+  limits: CliLimit[]
+  /** Quando estes números foram lidos; 0 se nunca. */
+  updatedAt: number
+  /** Motivo de não ter números novos. */
+  problem?: 'login' | 'unsupported' | 'failed'
+}
 
 /** Destino escolhido no campo de mensagem da conversa. */
-export type ComposerDestination = 'model' | TerminalTarget
+export type ComposerDestination = 'model' | 'shell'
 
 /** Comandos configuráveis para os CLIs executados no terminal integrado. */
 export interface TerminalCliConfig {
@@ -48,7 +91,7 @@ export interface TerminalCliConfig {
 
 /** Uso dos modelos acessados pelo terminal: instalado e com sessão aberta. */
 export interface CliUsageStatus {
-  id: 'claude' | 'cursor' | 'copilot' | 'gemini'
+  id: CliAgentId
   label: string
   installed: boolean
   running: boolean
@@ -409,6 +452,10 @@ export interface ChatSendOptions {
   providerId?: string | null
   /** Fluxo desta mensagem. Quando preenchido, o caminho visual escolhe o modelo. */
   flowId?: string | null
+  /** CLI de agente que responde no lugar do modelo. */
+  cliAgent?: CliAgentId | null
+  /** Sessão do CLI a continuar e quantas mensagens ela já conhece. */
+  cliSession?: { sessionId: string; seen: number } | null
   /** Design aberto no canvas. Liga a ferramenta design_canvas. */
   design?: import('./design').DesignContext
 }
@@ -433,6 +480,10 @@ export type StreamEvent =
     }
   | { type: 'tool-end'; callId: string; ok: boolean; denied?: boolean; summary: string }
   | { type: 'done' }
+  /** O CLI recusou a mensagem por falta de login. Vem antes do erro. */
+  | { type: 'cli-login'; agent: CliAgentId }
+  /** Sessão do CLI que respondeu, para continuar na próxima mensagem. */
+  | { type: 'cli-session'; agent: CliAgentId; sessionId: string }
   /** Tokens contados pelo modelo nesta rodada. promptTokens é o contexto enviado. */
   | { type: 'usage'; usage: ModelUsage }
   | { type: 'error'; message: string }

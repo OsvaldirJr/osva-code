@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
-import { modelChoiceValue } from '../../../shared/types'
+import type { CliAgentId, CliUsageStatus, AppSettings, AuthUser, McpServerStatus, RemoteChatStub } from '../../../shared/types'
+import { CLI_AGENT_LABEL, CLI_PREFIX, modelChoiceValue } from '../../../shared/types'
 import { ModelChoiceOptions } from './ModelChoice'
 import { conversationKind, folderKey, folderLabel, shortPath, type Conversation, type ConversationKind } from '../App'
 import { SquarePen, Search, Clock, Folder, Trash2, Plug, Settings, LogOut, MessageSquare, Code2, Globe, Download, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Palette, Bot, TerminalSquare } from 'lucide-react'
@@ -110,6 +110,8 @@ export function Sidebar({
   onNew,
   onDelete,
   onChangeProvider,
+  cliAgent,
+  agents,
   onOpenSettings,
   section,
   onSectionChange,
@@ -131,6 +133,8 @@ export function Sidebar({
   onNew: () => void
   onDelete: (id: string) => void
   onChangeProvider: (providerId: string) => void
+  cliAgent: CliAgentId | null
+  agents: CliUsageStatus[]
   onOpenSettings: () => void
   section: 'chats' | 'automations' | 'design' | 'plugins'
   onSectionChange: (section: 'chats' | 'automations' | 'design' | 'plugins') => void
@@ -351,13 +355,7 @@ export function Sidebar({
             {!folded && group.items.map((c) => {
               const cliRunning = c.cliTarget ? runningTerminals?.includes(`${c.id}:${c.cliTarget}`) : false
               const cliLabel =
-                c.cliTarget === 'claude'
-                  ? 'Claude'
-                  : c.cliTarget === 'copilot'
-                    ? 'Copilot'
-                    : c.cliTarget === 'shell'
-                      ? 'Shell'
-                      : null
+                c.cliAgent ? CLI_AGENT_LABEL[c.cliAgent] : c.cliTarget === 'shell' ? 'Shell' : null
               return (
               <div
                 key={c.id}
@@ -371,8 +369,8 @@ export function Sidebar({
                   </span>
                   <span className="conversation-meta-row">
                     {cliLabel && (
-                      <span className="conversation-cli-badge" title={`Sessão CLI (${cliLabel})`}>
-                        <TerminalSquare size={10} /> {cliLabel}
+                      <span className="conversation-cli-badge" title={c.cliAgent ? `Conversa com ${cliLabel}` : 'Sessão do Shell'}>
+                        {c.cliTarget === 'shell' && <TerminalSquare size={10} />} {cliLabel}
                       </span>
                     )}
                     <span className="conversation-when">{formatWhen(c.updatedAt)}</span>
@@ -426,10 +424,10 @@ export function Sidebar({
           Modelo ativo
           <select
             className="provider-select"
-            value={modelChoiceValue(settings.activeProviderId, settings.activeFlowId)}
+            value={cliAgent ? `${CLI_PREFIX}${cliAgent}` : modelChoiceValue(settings.activeProviderId, settings.activeFlowId)}
             onChange={(e) => onChangeProvider(e.target.value)}
           >
-            <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} withModel />
+            <ModelChoiceOptions providers={settings.providers} flows={settings.flows ?? []} agents={agents} withModel />
           </select>
         </label>
 

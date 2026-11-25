@@ -12,13 +12,16 @@ export function ErrorBubble({
   message,
   canRetry,
   onRetry,
-  resumable = false
+  resumable = false,
+  onLogin
 }: {
   message: string
   canRetry: boolean
   onRetry: () => void
   /** Interrupção retomável (ex.: computador dormiu): mostra "Continuar" em destaque. */
   resumable?: boolean
+  /** Falta login no CLI: mostra o botão que abre o terminal. */
+  onLogin?: () => void
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const title = errorTitle(message)
@@ -41,6 +44,12 @@ export function ErrorBubble({
           {resumable ? <Play size={15} /> : <AlertTriangle size={15} />}
           <span className="error-title">{title}</span>
         </button>
+
+        {onLogin && (
+          <button className="continue-btn" onClick={onLogin}>
+            Fazer login
+          </button>
+        )}
 
         {/* interrupção: "Continuar" sempre à mão, sem precisar expandir */}
         {resumable && canRetry && (
